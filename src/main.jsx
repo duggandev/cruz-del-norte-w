@@ -52,6 +52,46 @@ const apiGroups = [
   { name: 'SC-06 · Flota', count: 1, tone: 'slate', endpoints: ['POST /api/v1/programaciones'] },
 ]
 
+// Los endpoints administrativos pueden devolver un arreglo directo o una
+// respuesta paginada/envolvente (por ejemplo { pasajes: [...] }).
+const collectionKeysByResource = {
+  pasajes: ['pasajes', 'tickets', 'content', 'items', 'results', 'data'],
+  viajes: ['viajes', 'trips', 'content', 'items', 'results', 'data'],
+  reservas: ['reservas', 'reservations', 'content', 'items', 'results', 'data'],
+  pasajeros: ['pasajeros', 'passengers', 'content', 'items', 'results', 'data'],
+  pagos: ['pagos', 'payments', 'content', 'items', 'results', 'data'],
+}
+
+function extractAdminRecords(payload, resource) {
+  if (Array.isArray(payload)) return payload
+  if (!payload || typeof payload !== 'object') return null
+  const keys = collectionKeysByResource[resource] || ['content', 'items', 'results', 'data']
+  for (const key of keys) {
+    if (Array.isArray(payload[key])) return payload[key]
+  }
+  for (const key of keys) {
+    if (payload[key] && typeof payload[key] === 'object') {
+      const nested = extractAdminRecords(payload[key], resource)
+      if (nested) return nested
+    }
+  }
+  return payload.id || payload.idPasaje || payload.codigo || payload.estado ? [payload] : null
+}
+
+function getRecordValue(row, column) {
+  const aliases = {
+    codigo: ['codigo', 'codigoPasaje', 'codigoTicket'],
+    fechaEmision: ['fechaEmision', 'fecha emisión', 'createdAt', 'fechaCreacion'],
+    documentoUrl: ['documentoUrl', 'pdfUrl', 'urlDocumento', 'documento.url'],
+  }
+  const candidates = aliases[column] || [column]
+  for (const candidate of candidates) {
+    const value = candidate.split('.').reduce((current, key) => current?.[key], row)
+    if (value !== undefined && value !== null && value !== '') return value
+  }
+  return undefined
+}
+
 function App() {
   const [session, setSession] = useState(() => {
     try { return JSON.parse(localStorage.getItem('cruz_session') || 'null') } catch { return null }
@@ -147,18 +187,18 @@ function OperationalView({ view, resource }) {
     head.insertBefore(wrapper, connection || null)
     return () => wrapper.remove()
   }, [view, resource])
-  const records = Array.isArray(result) ? result : Array.isArray(result?.items) ? result.items : Array.isArray(result?.data) ? result.data : (result?.data && typeof result.data === 'object' ? [result.data] : result && (result.id || result.codigo || result.estado) ? [result] : null)
-  const columns = view === 'Pagos' ? ['codigo', 'importe', 'medioPago', 'estado', 'createdAt'] : view === 'Pasajeros' ? ['dni', 'nombreCompleto', 'estado', 'codigo'] : view === 'Pasajes' ? ['codigo', 'estado', 'documentoUrl', 'fechaEmision'] : view === 'Reservas' ? ['idReserva', 'idViaje', 'numeroAsiento', 'piso', 'estado', 'dni', 'vencimiento'] : ['estado', 'codigo', 'createdAt']
-  const labels = { idReserva: 'Reserva', idViaje: 'Viaje', idAsiento: 'ID asiento', numeroAsiento: 'Asiento', piso: 'Piso', codigo: 'Código', importe: 'Importe', monto: 'Importe', medioPago: 'Medio de pago', estado: 'Estado', createdAt: 'Fecha', fechaEmision: 'Fecha de emisión', vencimiento: 'Vencimiento', documentoUrl: 'Documento', dni: 'DNI', nombreCompleto: 'Pasajero' }
-  const valueFor = (row, column) => { if (column === 'importe') { const amount = row.importe ?? row.monto; return amount === undefined || amount === null ? '—' : `S/ ${Number(amount).toFixed(2)}` }; if (['createdAt', 'fechaEmision', 'fecha', 'fechaCreacion', 'vencimiento'].includes(column) && row[column]) return new Date(row[column]).toLocaleString('es-PE', { dateStyle: 'short', timeStyle: 'short' }); return row[column] ?? '—' }
+  const records = extractAdminRecords(result, resource)
+  const columns = view === 'Pagos' ? ['codigo', 'importe', 'medioPago', 'estado', 'createdAt'] : view === 'Pasajeros' ? ['dni', 'nombreCompleto', 'estado', 'codigo'] : view === 'Pasajes' ? ['idPasaje', 'codigo', 'estado', 'documentoUrl', 'fechaEmision'] : view === 'Reservas' ? ['idReserva', 'idViaje', 'numeroAsiento', 'piso', 'estado', 'dni', 'vencimiento'] : ['idViaje', 'origen', 'destino', 'fecha', 'horaSalida', 'tarifa', 'estado']
+  const labels = { idPasaje: 'Pasaje', idReserva: 'Reserva', idViaje: 'Viaje', origen: 'Origen', destino: 'Destino', horaSalida: 'Salida', tarifa: 'Tarifa', idAsiento: 'ID asiento', numeroAsiento: 'Asiento', piso: 'Piso', codigo: 'Código', importe: 'Importe', monto: 'Importe', medioPago: 'Medio de pago', estado: 'Estado', createdAt: 'Fecha', fecha: 'Fecha de viaje', fechaEmision: 'Fecha de emisión', vencimiento: 'Vencimiento', documentoUrl: 'Documento', dni: 'DNI', nombreCompleto: 'Pasajero' }
+  const valueFor = (row, column) => { const raw = getRecordValue(row, column); if (column === 'importe' || column === 'tarifa') return raw === undefined ? '—' : `S/ ${Number(raw).toFixed(2)}`; if (['createdAt', 'fechaEmision', 'fecha', 'fechaCreacion', 'vencimiento'].includes(column) && raw) return new Date(raw).toLocaleString('es-PE', { dateStyle: 'short', timeStyle: 'short' }); return raw ?? '—' }
   const filteredRecords = records ? records.filter(row => {
     if (!search.trim()) return true
     const normalized = value => String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
-    return normalized(Object.values(row).join(' ')).includes(normalized(search))
+    return normalized(JSON.stringify(row)).includes(normalized(search))
   }) : []
   const totalPages = records ? Math.max(1, Math.ceil(filteredRecords.length / pageSize)) : 1
   const visibleRecords = records ? filteredRecords.slice((page - 1) * pageSize, page * pageSize) : []
-  return <section className="records-page"><div className="records-head"><div><p className="eyebrow">OPERACIÓN · {view.toUpperCase()}</p><h1>{view === 'Pasajes' ? 'Pasajes vendidos' : view}</h1><p className="subtext">Consulta los registros entregados por el servicio administrativo.</p></div><span className="connection-label online"><i></i>API conectada</span></div><div className="panel records-panel">{loading ? <div className="records-empty"><Activity className="spin" size={24} /><strong>Cargando registros…</strong></div> : error ? <div className="records-empty"><X size={24} /><strong>No se pudo cargar {view.toLowerCase()}</strong><p>{error}</p></div> : records ? <><div className="table-wrap"><table><thead><tr>{columns.map(column => <th key={column}>{labels[column] || column}</th>)}</tr></thead><tbody>{visibleRecords.length ? visibleRecords.map((row, index) => <tr key={row.id || row.idReserva || row.codigo || index}>{columns.map(column => <td key={column}>{column === 'documentoUrl' && row[column] ? <a href={row[column]} target="_blank" rel="noreferrer" className="text-button">Descargar <Download size={13} /></a> : String(valueFor(row, column))}</td>)}</tr>) : <tr><td colSpan={columns.length}>No hay registros disponibles.</td></tr>}</tbody></table></div>{records.length > 0 && <div className="pagination"><span>{records.length ? `${(page - 1) * pageSize + 1}–${Math.min(page * pageSize, records.length)} de ${records.length} ${view.toLowerCase()}` : `0 ${view.toLowerCase()}`}</span><label>Mostrar<select value={pageSize} onChange={e => setPageSize(Number(e.target.value))}><option value="10">10</option><option value="25">25</option><option value="50">50</option></select></label><button disabled={page === 1} onClick={() => setPage(p => Math.max(1, p - 1))}><ChevronLeft size={15} /></button><strong>Página {page} de {totalPages}</strong><button disabled={page === totalPages} onClick={() => setPage(p => Math.min(totalPages, p + 1))}><ChevronRight size={15} /></button></div>}</> : <div className="records-empty"><FileText size={24} /><strong>El endpoint aún no entrega registros</strong><p>La API respondió correctamente, pero `/api/v1/admin/{resource}` devuelve un estado general en lugar de una colección. Cuando retorne un arreglo, esta vista lo mostrará automáticamente.</p><pre>{JSON.stringify(result, null, 2)}</pre></div>}</div></section>
+  return <section className="records-page"><div className="records-head"><div><p className="eyebrow">OPERACIÓN · {view.toUpperCase()}</p><h1>{view === 'Pasajes' ? 'Pasajes vendidos' : view}</h1><p className="subtext">Consulta los registros entregados por el servicio administrativo.</p></div><span className="connection-label online"><i></i>API conectada</span></div><div className="panel records-panel">{loading ? <div className="records-empty"><Activity className="spin" size={24} /><strong>Cargando registros…</strong></div> : error ? <div className="records-empty"><X size={24} /><strong>No se pudo cargar {view.toLowerCase()}</strong><p>{error}</p></div> : records ? <><div className="table-wrap"><table><thead><tr>{columns.map(column => <th key={column}>{labels[column] || column}</th>)}</tr></thead><tbody>{visibleRecords.length ? visibleRecords.map((row, index) => <tr key={row.id || row.idPasaje || row.idReserva || row.codigo || index}>{columns.map(column => { const documentUrl = getRecordValue(row, 'documentoUrl'); return <td key={column}>{column === 'documentoUrl' && documentUrl ? <a href={documentUrl} target="_blank" rel="noreferrer" className="text-button">Descargar <Download size={13} /></a> : String(valueFor(row, column))}</td> })}</tr>) : <tr><td colSpan={columns.length}>No hay registros disponibles.</td></tr>}</tbody></table></div>{records.length > 0 && <div className="pagination"><span>{records.length ? `${(page - 1) * pageSize + 1}–${Math.min(page * pageSize, records.length)} de ${records.length} ${view.toLowerCase()}` : `0 ${view.toLowerCase()}`}</span><label>Mostrar<select value={pageSize} onChange={e => setPageSize(Number(e.target.value))}><option value="10">10</option><option value="25">25</option><option value="50">50</option></select></label><button disabled={page === 1} onClick={() => setPage(p => Math.max(1, p - 1))}><ChevronLeft size={15} /></button><strong>Página {page} de {totalPages}</strong><button disabled={page === totalPages} onClick={() => setPage(p => Math.min(totalPages, p + 1))}><ChevronRight size={15} /></button></div>}</> : <div className="records-empty"><FileText size={24} /><strong>El endpoint aún no entrega registros</strong><p>La API respondió correctamente, pero `/api/v1/admin/{resource}` devuelve un estado general en lugar de una colección. Cuando retorne un arreglo, esta vista lo mostrará automáticamente.</p><pre>{JSON.stringify(result, null, 2)}</pre></div>}</div></section>
 }
 
 function LoginScreen({ onLogin }) {
