@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title>Cruz del Norte</title>
+  <rect width="64" height="64" rx="14" fill="#102f35"/>
+  <path d="M16 18h32a5 5 0 0 1 5 5v22a5 5 0 0 1-5 5H16a5 5 0 0 1-5-5V23a5 5 0 0 1 5-5Z" fill="#f2b84b"/>
+  <path d="M17 25h30v14H17z" fill="#fff8e8"/>
+  <path d="M21 29h8v6h-8zm14 0h8v6h-8z" fill="#102f35"/>
+  <circle cx="21" cy="48" r="4" fill="#102f35"/>
+  <circle cx="43" cy="48" r="4" fill="#102f35"/>
+  <path d="M27 11h10" stroke="#f2b84b" stroke-width="4" stroke-linecap="round"/>
+</svg>
