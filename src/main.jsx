@@ -9,7 +9,7 @@ import {
 import './styles.css'
 import { login } from './features/auth/services/authService'
 import { checkContracts, checkGateway } from './features/system/services/systemService'
-import { getAdminStatus } from './features/admin/services/adminService'
+import { createAdminTrip, getAdminStatus } from './features/admin/services/adminService'
 import { getAvailability, getTripSeats } from './features/travel/services/travelService'
 import { lookupDni, validatePassenger } from './features/passengers/services/passengerService'
 import { createMultipleReservations, createReservation, getReservationStatus } from './features/reservations/services/reservationService'
@@ -170,11 +170,45 @@ function App() {
     <main className="main-content">
       <header className="topbar"><button className="mobile-menu" onClick={() => setSidebarOpen(true)}><Menu size={21} /></button><div className="breadcrumbs"><span>Operaciones</span><span>/</span><strong>{active}</strong></div><div className="top-actions"><div className="search-box"><Search size={17} /><input placeholder="Buscar en el sistema" value={query} onChange={e => setQuery(e.target.value)} /><kbd>⌘ K</kbd></div><button className="icon-button"><Activity size={19} /><i className="notification-dot"></i></button><div className="top-avatar">{profileInitials}</div><button className="icon-button" title="Cerrar sesión" onClick={logout}><LogOut size={18} /></button></div></header>
       <div className="page-wrap">
-        {active === 'Ventanilla' ? <SalesDesk sale={sale} setSale={setSale} /> : <OperationalView view={active} resource={adminResourceByView[active]} />}
+        {active === 'Ventanilla' ? <SalesDesk sale={sale} setSale={setSale} /> : active === 'Viajes' ? <AdminTripsView /> : <OperationalView view={active} resource={adminResourceByView[active]} />}
       </div>
     </main>
     {showApi && <ApiModal onClose={() => setShowApi(false)} onConnect={connectGateway} contractStatus={contractStatus} />}
   </div>
+}
+
+function AdminTripsView() {
+  const nextDate = () => {
+    const date = new Date()
+    date.setDate(date.getDate() + 1)
+    const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000)
+    return local.toISOString().slice(0, 10)
+  }
+  const emptyForm = () => ({ idViaje: '', origen: 'Lima', destino: 'Ica', fecha: nextDate(), horaSalida: '08:00', tarifa: '65', tipoBus: 'DOS_PISOS_48', estado: 'PROGRAMADO' })
+  const [form, setForm] = useState(emptyForm)
+  const [records, setRecords] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+
+  const loadTrips = async () => {
+    setLoading(true)
+    setError('')
+    try { setRecords(extractAdminRecords(await getAdminStatus('viajes'), 'viajes') || []) }
+    catch (e) { setError(e.message || 'No se pudieron cargar los viajes.') }
+    finally { setLoading(false) }
+  }
+  useEffect(() => { loadTrips() }, [])
+  const submit = async event => {
+    event.preventDefault(); setSaving(true); setError(''); setNotice('')
+    try {
+      await createAdminTrip({ ...form, idViaje: Number(form.idViaje), tarifa: Number(form.tarifa) })
+      setForm(emptyForm()); setNotice('Viaje creado correctamente. La capacidad y los asientos se generaron automáticamente.'); await loadTrips()
+    } catch (e) { setError(e.message || 'No se pudo crear el viaje.') }
+    finally { setSaving(false) }
+  }
+  return <section className="records-page admin-trips-page"><div className="records-head"><div><p className="eyebrow">OPERACIÓN · VIAJES</p><h1>Programar viaje</h1><p className="subtext">Crea salidas y deja que el sistema configure automáticamente la capacidad y los asientos.</p></div><span className="connection-label online"><i></i>API conectada</span></div><div className="admin-trip-grid"><form className="panel trip-create-form" onSubmit={submit}><h2>Nuevo viaje</h2><p className="form-hint">Endpoint: <code>POST /api/v1/admin/viajes</code></p><div className="form-grid"><label>ID del viaje<input required type="number" min="1" value={form.idViaje} onChange={e => setForm({ ...form, idViaje: e.target.value })} placeholder="4000" /></label><label>Tarifa (S/)<input required type="number" min="0" step="0.01" value={form.tarifa} onChange={e => setForm({ ...form, tarifa: e.target.value })} /></label><label>Origen<input required value={form.origen} onChange={e => setForm({ ...form, origen: e.target.value })} /></label><label>Destino<input required value={form.destino} onChange={e => setForm({ ...form, destino: e.target.value })} /></label><label>Fecha<input required type="date" min={getTodayInputValue()} value={form.fecha} onChange={e => setForm({ ...form, fecha: e.target.value })} /></label><label>Hora de salida<input required type="time" value={form.horaSalida} onChange={e => setForm({ ...form, horaSalida: e.target.value })} /></label><label>Tipo de bus<select value={form.tipoBus} onChange={e => setForm({ ...form, tipoBus: e.target.value })}><option value="DOS_PISOS_48">Dos pisos · 60 asientos</option><option value="UN_PISO_48">Un piso · 48 asientos</option></select></label><label>Estado<select value={form.estado} onChange={e => setForm({ ...form, estado: e.target.value })}><option value="PROGRAMADO">Programado</option><option value="CANCELADO">Cancelado</option></select></label></div><div className="trip-capacity-note"><strong>{form.tipoBus === 'UN_PISO_48' ? 'Bus de un piso' : 'Bus de dos pisos'}</strong><span>{form.tipoBus === 'UN_PISO_48' ? '48 asientos · 1 piso · 4 columnas' : '60 asientos · piso 1: 1–12 · piso 2: 1–48'}</span></div>{error && <div className="sale-note error">{error}</div>}{notice && <div className="sale-note success">{notice}</div>}<div className="sale-actions"><button className="primary-button" disabled={saving}>{saving ? 'Creando…' : 'Crear viaje'}</button></div></form><div className="panel records-panel admin-trip-list"><div className="admin-trip-list-head"><div><h2>Viajes registrados</h2><p className="form-hint">Endpoint: <code>GET /api/v1/admin/viajes</code></p></div><button type="button" className="secondary-button" onClick={loadTrips}>Actualizar</button></div>{loading ? <div className="records-empty"><Activity className="spin" size={24} /><strong>Cargando viajes…</strong></div> : <div className="table-wrap"><table><thead><tr>{['idViaje', 'origen', 'destino', 'fecha', 'horaSalida', 'tarifa', 'tipoBus', 'estado'].map(column => <th key={column}>{({ idViaje: 'ID', origen: 'Origen', destino: 'Destino', fecha: 'Fecha', horaSalida: 'Salida', tarifa: 'Tarifa', tipoBus: 'Bus', estado: 'Estado' })[column]}</th>)}</tr></thead><tbody>{records.length ? records.map((trip, index) => <tr key={trip.idViaje || index}><td>{trip.idViaje ?? '—'}</td><td>{trip.origen ?? '—'}</td><td>{trip.destino ?? '—'}</td><td>{trip.fecha ?? '—'}</td><td>{trip.horaSalida ?? '—'}</td><td>S/ {Number(trip.tarifa ?? 0).toFixed(2)}</td><td>{trip.tipoBus ?? '—'}</td><td>{trip.estado ?? '—'}</td></tr>) : <tr><td colSpan="8">No hay viajes registrados.</td></tr>}</tbody></table></div>}</div></div></section>
 }
 
 function OperationalView({ view, resource }) {
