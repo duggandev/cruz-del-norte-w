@@ -35,6 +35,19 @@ const getTodayInputValue = () => {
   return localNow.toISOString().slice(0, 10)
 }
 
+function tripDateTime(trip) {
+  const date = trip?.fecha
+  if (!date) return null
+  const time = trip.horaSalida || trip.hora || '00:00'
+  const parsed = new Date(`${date}T${String(time).slice(0, 5)}:00`)
+  return Number.isNaN(parsed.getTime()) ? null : parsed
+}
+
+function isTripPast(trip) {
+  const departure = tripDateTime(trip)
+  return departure ? departure.getTime() <= Date.now() : false
+}
+
 const journeys = [
   { route: 'Lima → Ica', time: '06:30', platform: 'Andén 02', seats: '18 asientos', status: 'A tiempo', color: 'mint' },
   { route: 'Lima → Trujillo', time: '08:15', platform: 'Andén 05', seats: '07 asientos', status: 'A tiempo', color: 'mint' },
@@ -235,14 +248,14 @@ function SalesDeskLegacy({ sale, setSale }) {
   const reset = () => setSale(null)
   useEffect(() => {
     if (current.step !== 2 && current.step !== 5) return undefined
-    const panel = document.querySelector('.sale-main')
+    const panel = document.querySelector('.sale-main .sale-form')
     if (!panel) return undefined
     const button = document.createElement('button')
     button.type = 'button'
     button.className = 'secondary-button workflow-back'
     button.textContent = '← Atrás'
     button.onclick = () => setSale(previous => ({ ...previous, step: Math.max(1, previous.step - 1) }))
-    panel.appendChild(button)
+    panel.prepend(button)
     return () => button.remove()
   }, [current.step, setSale])
   useEffect(() => {
@@ -272,15 +285,21 @@ function SalesDesk({ sale, setSale }) {
   const update = patch => setSale({ ...current, ...patch })
   const searchTrips = async event => {
     event.preventDefault()
+    const requestedDate = new Date(`${current.fecha}T00:00:00`)
+    if (Number.isNaN(requestedDate.getTime()) || requestedDate.getTime() < new Date(new Date().toDateString()).getTime()) {
+      return update({ message: 'No puedes buscar pasajes para una fecha que ya pasó.' })
+    }
     update({ busy: true, message: '' })
     try {
       const result = await getAvailability(current)
-      update({ trips: Array.isArray(result) ? result : result?.viajes || [], step: 2, busy: false })
+      const trips = (Array.isArray(result) ? result : result?.viajes || []).filter(trip => !isTripPast(trip))
+      update({ trips, step: 2, busy: false, message: trips.length ? '' : 'No hay salidas disponibles para una fecha u hora futura.' })
     } catch (error) {
       update({ trips: [], step: 2, busy: false, message: error.message || 'No se pudieron cargar las salidas.' })
     }
   }
   const chooseTrip = async trip => {
+    if (isTripPast(trip)) return update({ message: 'Esta salida ya pasó y no se puede comprar.' })
     update({ busy: true, message: '' })
     try {
       const map = await getTripSeats(trip.idViaje)
@@ -330,6 +349,7 @@ function SalesDesk({ sale, setSale }) {
     update({ step: 3, message: '' })
   }
   const reserve = async () => {
+    if (isTripPast(current.selectedTrip)) return update({ message: 'La salida ya pasó y no se puede reservar.' })
     if (current.passengers.some(item => !item.dni || !item.nombres || !item.apellidos)) return update({ message: 'Completa los datos de todos los pasajeros.' })
     update({ busy: true, message: '' })
     try {
