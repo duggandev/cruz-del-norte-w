@@ -184,13 +184,65 @@ function AdminTripsView() {
     const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000)
     return local.toISOString().slice(0, 10)
   }
-  const emptyForm = () => ({ idViaje: '', origen: 'Lima', destino: 'Ica', fecha: nextDate(), horaSalida: '08:00', tarifa: '65', tipoBus: 'DOS_PISOS_48', estado: 'PROGRAMADO' })
+  const emptyForm = () => ({ origen: 'Lima', destino: 'Ica', fecha: nextDate(), horaSalida: '08:00', tarifa: '65', tipoBus: 'DOS_PISOS_48', estado: 'PROGRAMADO' })
   const [form, setForm] = useState(emptyForm)
   const [records, setRecords] = useState([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [showForm, setShowForm] = useState(false)
+  const [fieldErrors, setFieldErrors] = useState({})
+
+  const openForm = () => {
+    setFieldErrors({})
+    setError('')
+    setNotice('')
+    setShowForm(true)
+  }
+
+  const closeForm = () => {
+    setFieldErrors({})
+    setError('')
+    setShowForm(false)
+  }
+
+  const updateField = (field, value) => {
+    setForm(current => ({ ...current, [field]: value }))
+    setFieldErrors(current => ({ ...current, [field]: '' }))
+  }
+
+  const validateForm = () => {
+    const nextErrors = {}
+    const tarifa = Number(form.tarifa)
+    const origen = form.origen.trim()
+    const destino = form.destino.trim()
+
+    if (!Number.isFinite(tarifa) || tarifa <= 0) nextErrors.tarifa = 'La tarifa debe ser mayor que cero.'
+    if (!origen) nextErrors.origen = 'Ingresa el origen.'
+    if (!destino) nextErrors.destino = 'Ingresa el destino.'
+    else if (origen && destino.toLowerCase() === origen.toLowerCase()) nextErrors.destino = 'El destino debe ser distinto al origen.'
+    if (!form.fecha) nextErrors.fecha = 'Selecciona una fecha.'
+    else if (form.fecha < getTodayInputValue()) nextErrors.fecha = 'La fecha no puede estar en el pasado.'
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(form.horaSalida)) nextErrors.horaSalida = 'Selecciona una hora válida.'
+    if (!['DOS_PISOS_48', 'UN_PISO_48'].includes(form.tipoBus)) nextErrors.tipoBus = 'Selecciona un tipo de bus.'
+    if (!['PROGRAMADO', 'CANCELADO'].includes(form.estado)) nextErrors.estado = 'Selecciona un estado.'
+
+    return nextErrors
+  }
+
+  useEffect(() => {
+    if (!showForm) return undefined
+    const closeOnEscape = event => {
+      if (event.key === 'Escape') setShowForm(false)
+    }
+    document.addEventListener('keydown', closeOnEscape)
+    document.body.classList.add('trip-modal-open')
+    return () => {
+      document.removeEventListener('keydown', closeOnEscape)
+      document.body.classList.remove('trip-modal-open')
+    }
+  }, [showForm])
 
   const loadTrips = async () => {
     setLoading(true)
@@ -201,14 +253,61 @@ function AdminTripsView() {
   }
   useEffect(() => { loadTrips() }, [])
   const submit = async event => {
-    event.preventDefault(); setSaving(true); setError(''); setNotice('')
+    event.preventDefault()
+    const nextErrors = validateForm()
+    setFieldErrors(nextErrors)
+    if (Object.keys(nextErrors).length) {
+      setError('Revisa los datos marcados antes de crear el viaje.')
+      setNotice('')
+      return
+    }
+    setSaving(true); setError(''); setNotice('')
     try {
-      await createAdminTrip({ ...form, idViaje: Number(form.idViaje), tarifa: Number(form.tarifa) })
-      setForm(emptyForm()); setNotice('Viaje creado correctamente. La capacidad y los asientos se generaron automáticamente.'); await loadTrips()
+      await createAdminTrip({
+        origen: form.origen.trim(),
+        destino: form.destino.trim(),
+        fecha: form.fecha,
+        horaSalida: form.horaSalida,
+        tarifa: Number(form.tarifa),
+        tipoBus: form.tipoBus,
+        estado: form.estado,
+      })
+      setForm(emptyForm()); setFieldErrors({}); setNotice('Viaje creado correctamente. La capacidad y los asientos se generaron automáticamente.'); setShowForm(false); await loadTrips()
     } catch (e) { setError(e.message || 'No se pudo crear el viaje.') }
     finally { setSaving(false) }
   }
-  return <section className="records-page admin-trips-page"><div className="records-head"><div><p className="eyebrow">OPERACIÓN · VIAJES</p><h1>Programar viaje</h1><p className="subtext">Crea salidas y deja que el sistema configure automáticamente la capacidad y los asientos.</p></div><span className="connection-label online"><i></i>API conectada</span></div><div className="admin-trip-grid"><form className="panel trip-create-form" onSubmit={submit}><h2>Nuevo viaje</h2><p className="form-hint">Endpoint: <code>POST /api/v1/admin/viajes</code></p><div className="form-grid"><label>ID del viaje<input required type="number" min="1" value={form.idViaje} onChange={e => setForm({ ...form, idViaje: e.target.value })} placeholder="4000" /></label><label>Tarifa (S/)<input required type="number" min="0" step="0.01" value={form.tarifa} onChange={e => setForm({ ...form, tarifa: e.target.value })} /></label><label>Origen<input required value={form.origen} onChange={e => setForm({ ...form, origen: e.target.value })} /></label><label>Destino<input required value={form.destino} onChange={e => setForm({ ...form, destino: e.target.value })} /></label><label>Fecha<input required type="date" min={getTodayInputValue()} value={form.fecha} onChange={e => setForm({ ...form, fecha: e.target.value })} /></label><label>Hora de salida<input required type="time" value={form.horaSalida} onChange={e => setForm({ ...form, horaSalida: e.target.value })} /></label><label>Tipo de bus<select value={form.tipoBus} onChange={e => setForm({ ...form, tipoBus: e.target.value })}><option value="DOS_PISOS_48">Dos pisos · 60 asientos</option><option value="UN_PISO_48">Un piso · 48 asientos</option></select></label><label>Estado<select value={form.estado} onChange={e => setForm({ ...form, estado: e.target.value })}><option value="PROGRAMADO">Programado</option><option value="CANCELADO">Cancelado</option></select></label></div><div className="trip-capacity-note"><strong>{form.tipoBus === 'UN_PISO_48' ? 'Bus de un piso' : 'Bus de dos pisos'}</strong><span>{form.tipoBus === 'UN_PISO_48' ? '48 asientos · 1 piso · 4 columnas' : '60 asientos · piso 1: 1–12 · piso 2: 1–48'}</span></div>{error && <div className="sale-note error">{error}</div>}{notice && <div className="sale-note success">{notice}</div>}<div className="sale-actions"><button className="primary-button" disabled={saving}>{saving ? 'Creando…' : 'Crear viaje'}</button></div></form><div className="panel records-panel admin-trip-list"><div className="admin-trip-list-head"><div><h2>Viajes registrados</h2><p className="form-hint">Endpoint: <code>GET /api/v1/admin/viajes</code></p></div><button type="button" className="secondary-button" onClick={loadTrips}>Actualizar</button></div>{loading ? <div className="records-empty"><Activity className="spin" size={24} /><strong>Cargando viajes…</strong></div> : <div className="table-wrap"><table><thead><tr>{['idViaje', 'origen', 'destino', 'fecha', 'horaSalida', 'tarifa', 'tipoBus', 'estado'].map(column => <th key={column}>{({ idViaje: 'ID', origen: 'Origen', destino: 'Destino', fecha: 'Fecha', horaSalida: 'Salida', tarifa: 'Tarifa', tipoBus: 'Bus', estado: 'Estado' })[column]}</th>)}</tr></thead><tbody>{records.length ? records.map((trip, index) => <tr key={trip.idViaje || index}><td>{trip.idViaje ?? '—'}</td><td>{trip.origen ?? '—'}</td><td>{trip.destino ?? '—'}</td><td>{trip.fecha ?? '—'}</td><td>{trip.horaSalida ?? '—'}</td><td>S/ {Number(trip.tarifa ?? 0).toFixed(2)}</td><td>{trip.tipoBus ?? '—'}</td><td>{trip.estado ?? '—'}</td></tr>) : <tr><td colSpan="8">No hay viajes registrados.</td></tr>}</tbody></table></div>}</div></div></section>
+  return <section className="records-page admin-trips-page">
+    <div className="records-head">
+      <div><p className="eyebrow">OPERACIÓN · VIAJES</p><h1>Programar viaje</h1><p className="subtext">Crea salidas y deja que el sistema configure automáticamente la capacidad y los asientos.</p></div>
+      <div className="records-head-actions"><span className="connection-label online"><i></i>API conectada</span><button type="button" className="primary-button" onClick={openForm}>＋ Nuevo viaje</button></div>
+    </div>
+    <div className="admin-trip-grid">
+      <div className="panel records-panel admin-trip-list">
+        <div className="admin-trip-list-head"><div><h2>Viajes registrados</h2></div><button type="button" className="secondary-button" onClick={loadTrips}>Actualizar</button></div>
+        {loading ? <div className="records-empty"><Activity className="spin" size={24} /><strong>Cargando viajes…</strong></div> : <div className="table-wrap"><table><thead><tr>{['idViaje', 'origen', 'destino', 'fecha', 'horaSalida', 'tarifa', 'tipoBus', 'estado'].map(column => <th key={column}>{({ idViaje: 'ID', origen: 'Origen', destino: 'Destino', fecha: 'Fecha', horaSalida: 'Salida', tarifa: 'Tarifa', tipoBus: 'Bus', estado: 'Estado' })[column]}</th>)}</tr></thead><tbody>{records.length ? records.map((trip, index) => <tr key={trip.idViaje || index}><td>{trip.idViaje ?? '—'}</td><td>{trip.origen ?? '—'}</td><td>{trip.destino ?? '—'}</td><td>{trip.fecha ?? '—'}</td><td>{trip.horaSalida ?? '—'}</td><td>S/ {Number(trip.tarifa ?? 0).toFixed(2)}</td><td>{trip.tipoBus ?? '—'}</td><td>{trip.estado ?? '—'}</td></tr>) : <tr><td colSpan="8">No hay viajes registrados.</td></tr>}</tbody></table></div>}
+      </div>
+    </div>
+    {showForm && <div className="trip-modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) closeForm() }}>
+      <form className="trip-modal" onSubmit={submit}>
+        <div className="trip-modal-head"><div><p className="eyebrow">NUEVO REGISTRO</p><h2>Nuevo viaje</h2><p className="trip-modal-subtitle">Completa los datos para generar la salida y su capacidad.</p></div><button type="button" className="close-button" aria-label="Cerrar" onClick={closeForm}><X size={19} /></button></div>
+        <div className="trip-modal-body">
+          <div className="form-grid">
+            <label className={fieldErrors.tarifa ? 'field-invalid' : ''}>Tarifa (S/)<input required type="number" min="0.01" step="0.01" value={form.tarifa} onChange={e => updateField('tarifa', e.target.value)} aria-invalid={Boolean(fieldErrors.tarifa)} />{fieldErrors.tarifa && <span className="trip-field-error">{fieldErrors.tarifa}</span>}</label>
+            <label className={fieldErrors.origen ? 'field-invalid' : ''}>Origen<input required value={form.origen} onChange={e => updateField('origen', e.target.value)} aria-invalid={Boolean(fieldErrors.origen)} />{fieldErrors.origen && <span className="trip-field-error">{fieldErrors.origen}</span>}</label>
+            <label className={fieldErrors.destino ? 'field-invalid' : ''}>Destino<input required value={form.destino} onChange={e => updateField('destino', e.target.value)} aria-invalid={Boolean(fieldErrors.destino)} />{fieldErrors.destino && <span className="trip-field-error">{fieldErrors.destino}</span>}</label>
+            <label className={fieldErrors.fecha ? 'field-invalid' : ''}>Fecha<input required type="date" min={getTodayInputValue()} value={form.fecha} onChange={e => updateField('fecha', e.target.value)} aria-invalid={Boolean(fieldErrors.fecha)} />{fieldErrors.fecha && <span className="trip-field-error">{fieldErrors.fecha}</span>}</label>
+            <label className={fieldErrors.horaSalida ? 'field-invalid' : ''}>Hora de salida<input required type="time" value={form.horaSalida} onChange={e => updateField('horaSalida', e.target.value)} aria-invalid={Boolean(fieldErrors.horaSalida)} />{fieldErrors.horaSalida && <span className="trip-field-error">{fieldErrors.horaSalida}</span>}</label>
+            <label className={fieldErrors.tipoBus ? 'field-invalid' : ''}>Tipo de bus<select value={form.tipoBus} onChange={e => updateField('tipoBus', e.target.value)} aria-invalid={Boolean(fieldErrors.tipoBus)}><option value="DOS_PISOS_48">Dos pisos · 60 asientos</option><option value="UN_PISO_48">Un piso · 48 asientos</option></select>{fieldErrors.tipoBus && <span className="trip-field-error">{fieldErrors.tipoBus}</span>}</label>
+            <label className={fieldErrors.estado ? 'field-invalid' : ''}>Estado<select value={form.estado} onChange={e => updateField('estado', e.target.value)} aria-invalid={Boolean(fieldErrors.estado)}><option value="PROGRAMADO">Programado</option><option value="CANCELADO">Cancelado</option></select>{fieldErrors.estado && <span className="trip-field-error">{fieldErrors.estado}</span>}</label>
+          </div>
+          <div className="trip-capacity-note"><strong>{form.tipoBus === 'UN_PISO_48' ? 'Bus de un piso' : 'Bus de dos pisos'}</strong><span>{form.tipoBus === 'UN_PISO_48' ? '48 asientos · 1 piso · 4 columnas' : '60 asientos · piso 1: 1–12 · piso 2: 1–48'}</span></div>
+          {error && <div className="sale-note error">{error}</div>}
+          {notice && <div className="sale-note success">{notice}</div>}
+        </div>
+        <div className="trip-modal-actions"><button type="button" className="secondary-button" onClick={closeForm}>Cancelar</button><button type="submit" className="primary-button" disabled={saving}>{saving ? 'Creando…' : 'Crear viaje'}</button></div>
+      </form>
+    </div>}
+  </section>
 }
 
 function OperationalView({ view, resource }) {
@@ -220,6 +319,9 @@ function OperationalView({ view, resource }) {
   const [search, setSearch] = useState('')
   useEffect(() => { let mounted = true; setLoading(true); setError(''); getAdminStatus(resource).then(data => mounted && setResult(data)).catch(e => mounted && setError(e.message)).finally(() => mounted && setLoading(false)); return () => { mounted = false } }, [resource])
   useEffect(() => setPage(1), [resource, pageSize, search])
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages)
+  }, [page, totalPages])
   useEffect(() => {
     if (!resource) return undefined
     const head = document.querySelector('.records-head')
@@ -243,9 +345,40 @@ function OperationalView({ view, resource }) {
     const normalized = value => String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
     return normalized(JSON.stringify(row)).includes(normalized(search))
   }) : []
-  const totalPages = records ? Math.max(1, Math.ceil(filteredRecords.length / pageSize)) : 1
+  const totalPages = Math.max(1, Math.ceil(filteredRecords.length / pageSize))
   const visibleRecords = records ? filteredRecords.slice((page - 1) * pageSize, page * pageSize) : []
-  return <section className="records-page"><div className="records-head"><div><p className="eyebrow">OPERACIÓN · {view.toUpperCase()}</p><h1>{view === 'Pasajes' ? 'Pasajes vendidos' : view}</h1><p className="subtext">Consulta los registros entregados por el servicio administrativo.</p></div><span className="connection-label online"><i></i>API conectada</span></div><div className="panel records-panel">{loading ? <div className="records-empty"><Activity className="spin" size={24} /><strong>Cargando registros…</strong></div> : error ? <div className="records-empty"><X size={24} /><strong>No se pudo cargar {view.toLowerCase()}</strong><p>{error}</p></div> : records ? <><div className="table-wrap"><table><thead><tr>{columns.map(column => <th key={column}>{labels[column] || column}</th>)}</tr></thead><tbody>{visibleRecords.length ? visibleRecords.map((row, index) => <tr key={row.id || row.idPasaje || row.idReserva || row.codigo || index}>{columns.map(column => { const documentUrl = getRecordValue(row, 'documentoUrl'); return <td key={column}>{column === 'documentoUrl' && documentUrl ? <a href={documentUrl} target="_blank" rel="noreferrer" className="text-button">Descargar <Download size={13} /></a> : String(valueFor(row, column))}</td> })}</tr>) : <tr><td colSpan={columns.length}>No hay registros disponibles.</td></tr>}</tbody></table></div>{records.length > 0 && <div className="pagination"><span>{records.length ? `${(page - 1) * pageSize + 1}–${Math.min(page * pageSize, records.length)} de ${records.length} ${view.toLowerCase()}` : `0 ${view.toLowerCase()}`}</span><label>Mostrar<select value={pageSize} onChange={e => setPageSize(Number(e.target.value))}><option value="10">10</option><option value="25">25</option><option value="50">50</option></select></label><button disabled={page === 1} onClick={() => setPage(p => Math.max(1, p - 1))}><ChevronLeft size={15} /></button><strong>Página {page} de {totalPages}</strong><button disabled={page === totalPages} onClick={() => setPage(p => Math.min(totalPages, p + 1))}><ChevronRight size={15} /></button></div>}</> : <div className="records-empty"><FileText size={24} /><strong>El endpoint aún no entrega registros</strong><p>La API respondió correctamente, pero `/api/v1/admin/{resource}` devuelve un estado general en lugar de una colección. Cuando retorne un arreglo, esta vista lo mostrará automáticamente.</p><pre>{JSON.stringify(result, null, 2)}</pre></div>}</div></section>
+  return <section className="records-page">
+    <div className="records-head">
+      <div><p className="eyebrow">OPERACIÓN · {view.toUpperCase()}</p><h1>{view === 'Pasajes' ? 'Pasajes vendidos' : view}</h1><p className="subtext">Consulta los registros entregados por el servicio administrativo.</p></div>
+      <span className="connection-label online"><i></i>API conectada</span>
+    </div>
+    <div className="panel records-panel">
+      {loading ? <div className="records-empty"><Activity className="spin" size={24} /><strong>Cargando registros…</strong></div>
+        : error ? <div className="records-empty"><X size={24} /><strong>No se pudo cargar {view.toLowerCase()}</strong><p>{error}</p></div>
+        : records ? <>
+          <div className="table-wrap">
+            <table>
+              <thead><tr>{columns.map(column => <th key={column}>{labels[column] || column}</th>)}</tr></thead>
+              <tbody>{visibleRecords.length ? visibleRecords.map((row, index) => <tr key={row.id || row.idPasaje || row.idReserva || row.codigo || index}>
+                {columns.map(column => {
+                  const documentUrl = getRecordValue(row, 'documentoUrl')
+                  return <td key={column}>{column === 'documentoUrl' && documentUrl
+                    ? <a href={documentUrl} target="_blank" rel="noreferrer" className="text-button">Descargar <Download size={13} /></a>
+                    : String(valueFor(row, column))}</td>
+                })}
+              </tr>) : <tr><td colSpan={columns.length}>No hay registros disponibles.</td></tr>}</tbody>
+            </table>
+          </div>
+          {filteredRecords.length > 0 && <div className="pagination">
+            <span>{`${(page - 1) * pageSize + 1}–${Math.min(page * pageSize, filteredRecords.length)} de ${filteredRecords.length} ${view.toLowerCase()}`}</span>
+            <label>Mostrar<select value={pageSize} onChange={e => setPageSize(Number(e.target.value))}><option value="10">10</option><option value="25">25</option><option value="50">50</option></select></label>
+            <button type="button" disabled={page === 1} onClick={() => setPage(p => Math.max(1, p - 1))}><ChevronLeft size={15} /></button>
+            <strong>Página {page} de {totalPages}</strong>
+            <button type="button" disabled={page === totalPages} onClick={() => setPage(p => Math.min(totalPages, p + 1))}><ChevronRight size={15} /></button>
+          </div>}
+        </> : <div className="records-empty"><FileText size={24} /><strong>El endpoint aún no entrega registros</strong><p>La API respondió correctamente, pero `/api/v1/admin/{resource}` devuelve un estado general en lugar de una colección. Cuando retorne un arreglo, esta vista lo mostrará automáticamente.</p><pre>{JSON.stringify(result, null, 2)}</pre></div>}
+    </div>
+  </section>
 }
 
 function LoginScreen({ onLogin }) {
