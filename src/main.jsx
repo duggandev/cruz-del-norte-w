@@ -158,7 +158,45 @@ function OperationalView({ view, resource }) {
   }) : []
   const totalPages = records ? Math.max(1, Math.ceil(filteredRecords.length / pageSize)) : 1
   const visibleRecords = records ? filteredRecords.slice((page - 1) * pageSize, page * pageSize) : []
+<<<<<<< HEAD
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages)
+  }, [page, totalPages])
+  return <section className="records-page">
+    <div className="records-head">
+      <div><p className="eyebrow">OPERACIÓN · {view.toUpperCase()}</p><h1>{view === 'Pasajes' ? 'Pasajes vendidos' : view}</h1><p className="subtext">Consulta los registros entregados por el servicio administrativo.</p></div>
+      <span className="connection-label online"><i></i>API conectada</span>
+    </div>
+    <div className="panel records-panel">
+      {loading ? <div className="records-empty"><Activity className="spin" size={24} /><strong>Cargando registros…</strong></div>
+        : error ? <div className="records-empty"><X size={24} /><strong>No se pudo cargar {view.toLowerCase()}</strong><p>{error}</p></div>
+        : records ? <>
+          <div className="table-wrap">
+            <table>
+              <thead><tr>{columns.map(column => <th key={column}>{labels[column] || column}</th>)}</tr></thead>
+              <tbody>{visibleRecords.length ? visibleRecords.map((row, index) => <tr key={row.id || row.idPasaje || row.idReserva || row.codigo || index}>
+                {columns.map(column => {
+                  const documentUrl = getRecordValue(row, 'documentoUrl')
+                  return <td key={column}>{column === 'documentoUrl' && documentUrl
+                    ? <a href={documentUrl} target="_blank" rel="noreferrer" className="text-button">Descargar <Download size={13} /></a>
+                    : String(valueFor(row, column))}</td>
+                })}
+              </tr>) : <tr><td colSpan={columns.length}>No hay registros disponibles.</td></tr>}</tbody>
+            </table>
+          </div>
+          {filteredRecords.length > 0 && <div className="pagination">
+            <span>{`${(page - 1) * pageSize + 1}–${Math.min(page * pageSize, filteredRecords.length)} de ${filteredRecords.length} ${view.toLowerCase()}`}</span>
+            <label>Mostrar<select value={pageSize} onChange={e => setPageSize(Number(e.target.value))}><option value="10">10</option><option value="25">25</option><option value="50">50</option></select></label>
+            <button type="button" disabled={page === 1} onClick={() => setPage(p => Math.max(1, p - 1))}><ChevronLeft size={15} /></button>
+            <strong>Página {page} de {totalPages}</strong>
+            <button type="button" disabled={page === totalPages} onClick={() => setPage(p => Math.min(totalPages, p + 1))}><ChevronRight size={15} /></button>
+          </div>}
+        </> : <div className="records-empty"><FileText size={24} /><strong>El endpoint aún no entrega registros</strong><p>La API respondió correctamente, pero `/api/v1/admin/{resource}` devuelve un estado general en lugar de una colección. Cuando retorne un arreglo, esta vista lo mostrará automáticamente.</p><pre>{JSON.stringify(result, null, 2)}</pre></div>}
+    </div>
+  </section>
+=======
   return <section className="records-page"><div className="records-head"><div><p className="eyebrow">OPERACIÓN · {view.toUpperCase()}</p><h1>{view === 'Pasajes' ? 'Pasajes vendidos' : view}</h1><p className="subtext">Consulta los registros entregados por el servicio administrativo.</p></div><span className="connection-label online"><i></i>API conectada</span></div><div className="panel records-panel">{loading ? <div className="records-empty"><Activity className="spin" size={24} /><strong>Cargando registros…</strong></div> : error ? <div className="records-empty"><X size={24} /><strong>No se pudo cargar {view.toLowerCase()}</strong><p>{error}</p></div> : records ? <><div className="table-wrap"><table><thead><tr>{columns.map(column => <th key={column}>{labels[column] || column}</th>)}</tr></thead><tbody>{visibleRecords.length ? visibleRecords.map((row, index) => <tr key={row.id || row.idReserva || row.codigo || index}>{columns.map(column => <td key={column}>{column === 'documentoUrl' && row[column] ? <a href={row[column]} target="_blank" rel="noreferrer" className="text-button">Descargar <Download size={13} /></a> : String(valueFor(row, column))}</td>)}</tr>) : <tr><td colSpan={columns.length}>No hay registros disponibles.</td></tr>}</tbody></table></div>{records.length > 0 && <div className="pagination"><span>{records.length ? `${(page - 1) * pageSize + 1}–${Math.min(page * pageSize, records.length)} de ${records.length} ${view.toLowerCase()}` : `0 ${view.toLowerCase()}`}</span><label>Mostrar<select value={pageSize} onChange={e => setPageSize(Number(e.target.value))}><option value="10">10</option><option value="25">25</option><option value="50">50</option></select></label><button disabled={page === 1} onClick={() => setPage(p => Math.max(1, p - 1))}><ChevronLeft size={15} /></button><strong>Página {page} de {totalPages}</strong><button disabled={page === totalPages} onClick={() => setPage(p => Math.min(totalPages, p + 1))}><ChevronRight size={15} /></button></div>}</> : <div className="records-empty"><FileText size={24} /><strong>El endpoint aún no entrega registros</strong><p>La API respondió correctamente, pero `/api/v1/admin/{resource}` devuelve un estado general en lugar de una colección. Cuando retorne un arreglo, esta vista lo mostrará automáticamente.</p><pre>{JSON.stringify(result, null, 2)}</pre></div>}</div></section>
+>>>>>>> origin/main
 }
 
 function LoginScreen({ onLogin }) {
