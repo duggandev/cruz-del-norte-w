@@ -9,7 +9,7 @@ import {
 import './styles.css'
 import { login } from './features/auth/services/authService'
 import { checkContracts, checkGateway } from './features/system/services/systemService'
-import { getAdminStatus } from './features/admin/services/adminService'
+import { createAdminTrip, getAdminStatus } from './features/admin/services/adminService'
 import { getAvailability, getTripSeats } from './features/travel/services/travelService'
 import { lookupDni, validatePassenger } from './features/passengers/services/passengerService'
 import { createMultipleReservations, createReservation, getReservationStatus } from './features/reservations/services/reservationService'
@@ -35,6 +35,19 @@ const getTodayInputValue = () => {
   return localNow.toISOString().slice(0, 10)
 }
 
+function tripDateTime(trip) {
+  const date = trip?.fecha
+  if (!date) return null
+  const time = trip.horaSalida || trip.hora || '00:00'
+  const parsed = new Date(`${date}T${String(time).slice(0, 5)}:00`)
+  return Number.isNaN(parsed.getTime()) ? null : parsed
+}
+
+function isTripPast(trip) {
+  const departure = tripDateTime(trip)
+  return departure ? departure.getTime() <= Date.now() : false
+}
+
 const journeys = [
   { route: 'Lima → Ica', time: '06:30', platform: 'Andén 02', seats: '18 asientos', status: 'A tiempo', color: 'mint' },
   { route: 'Lima → Trujillo', time: '08:15', platform: 'Andén 05', seats: '07 asientos', status: 'A tiempo', color: 'mint' },
@@ -51,6 +64,46 @@ const apiGroups = [
   { name: 'SC-05 · Pasajes', count: 2, tone: 'pink', endpoints: ['POST /api/v1/pasajes', 'GET /documentos/:codigo.pdf'] },
   { name: 'SC-06 · Flota', count: 1, tone: 'slate', endpoints: ['POST /api/v1/programaciones'] },
 ]
+
+// Los endpoints administrativos pueden devolver un arreglo directo o una
+// respuesta paginada/envolvente (por ejemplo { pasajes: [...] }).
+const collectionKeysByResource = {
+  pasajes: ['pasajes', 'tickets', 'content', 'items', 'results', 'data'],
+  viajes: ['viajes', 'trips', 'content', 'items', 'results', 'data'],
+  reservas: ['reservas', 'reservations', 'content', 'items', 'results', 'data'],
+  pasajeros: ['pasajeros', 'passengers', 'content', 'items', 'results', 'data'],
+  pagos: ['pagos', 'payments', 'content', 'items', 'results', 'data'],
+}
+
+function extractAdminRecords(payload, resource) {
+  if (Array.isArray(payload)) return payload
+  if (!payload || typeof payload !== 'object') return null
+  const keys = collectionKeysByResource[resource] || ['content', 'items', 'results', 'data']
+  for (const key of keys) {
+    if (Array.isArray(payload[key])) return payload[key]
+  }
+  for (const key of keys) {
+    if (payload[key] && typeof payload[key] === 'object') {
+      const nested = extractAdminRecords(payload[key], resource)
+      if (nested) return nested
+    }
+  }
+  return payload.id || payload.idPasaje || payload.codigo || payload.estado ? [payload] : null
+}
+
+function getRecordValue(row, column) {
+  const aliases = {
+    codigo: ['codigo', 'codigoPasaje', 'codigoTicket'],
+    fechaEmision: ['fechaEmision', 'fecha emisión', 'createdAt', 'fechaCreacion'],
+    documentoUrl: ['documentoUrl', 'pdfUrl', 'urlDocumento', 'documento.url'],
+  }
+  const candidates = aliases[column] || [column]
+  for (const candidate of candidates) {
+    const value = candidate.split('.').reduce((current, key) => current?.[key], row)
+    if (value !== undefined && value !== null && value !== '') return value
+  }
+  return undefined
+}
 
 function App() {
   const [session, setSession] = useState(() => {
@@ -117,11 +170,144 @@ function App() {
     <main className="main-content">
       <header className="topbar"><button className="mobile-menu" onClick={() => setSidebarOpen(true)}><Menu size={21} /></button><div className="breadcrumbs"><span>Operaciones</span><span>/</span><strong>{active}</strong></div><div className="top-actions"><div className="search-box"><Search size={17} /><input placeholder="Buscar en el sistema" value={query} onChange={e => setQuery(e.target.value)} /><kbd>⌘ K</kbd></div><button className="icon-button"><Activity size={19} /><i className="notification-dot"></i></button><div className="top-avatar">{profileInitials}</div><button className="icon-button" title="Cerrar sesión" onClick={logout}><LogOut size={18} /></button></div></header>
       <div className="page-wrap">
-        {active === 'Ventanilla' ? <SalesDesk sale={sale} setSale={setSale} /> : <OperationalView view={active} resource={adminResourceByView[active]} />}
+        {active === 'Ventanilla' ? <SalesDesk sale={sale} setSale={setSale} /> : active === 'Viajes' ? <AdminTripsView /> : <OperationalView view={active} resource={adminResourceByView[active]} />}
       </div>
     </main>
     {showApi && <ApiModal onClose={() => setShowApi(false)} onConnect={connectGateway} contractStatus={contractStatus} />}
   </div>
+}
+
+function AdminTripsView() {
+  const nextDate = () => {
+    const date = new Date()
+    date.setDate(date.getDate() + 1)
+    const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000)
+    return local.toISOString().slice(0, 10)
+  }
+  const emptyForm = () => ({ origen: 'Lima', destino: 'Ica', fecha: nextDate(), horaSalida: '08:00', tarifa: '65', tipoBus: 'DOS_PISOS_48', estado: 'PROGRAMADO' })
+  const [form, setForm] = useState(emptyForm)
+  const [records, setRecords] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+  const [showForm, setShowForm] = useState(false)
+  const [fieldErrors, setFieldErrors] = useState({})
+
+  const openForm = () => {
+    setFieldErrors({})
+    setError('')
+    setNotice('')
+    setShowForm(true)
+  }
+
+  const closeForm = () => {
+    setFieldErrors({})
+    setError('')
+    setShowForm(false)
+  }
+
+  const updateField = (field, value) => {
+    setForm(current => ({ ...current, [field]: value }))
+    setFieldErrors(current => ({ ...current, [field]: '' }))
+  }
+
+  const validateForm = () => {
+    const nextErrors = {}
+    const tarifa = Number(form.tarifa)
+    const origen = form.origen.trim()
+    const destino = form.destino.trim()
+
+    if (!Number.isFinite(tarifa) || tarifa <= 0) nextErrors.tarifa = 'La tarifa debe ser mayor que cero.'
+    if (!origen) nextErrors.origen = 'Ingresa el origen.'
+    if (!destino) nextErrors.destino = 'Ingresa el destino.'
+    else if (origen && destino.toLowerCase() === origen.toLowerCase()) nextErrors.destino = 'El destino debe ser distinto al origen.'
+    if (!form.fecha) nextErrors.fecha = 'Selecciona una fecha.'
+    else if (form.fecha < getTodayInputValue()) nextErrors.fecha = 'La fecha no puede estar en el pasado.'
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(form.horaSalida)) nextErrors.horaSalida = 'Selecciona una hora válida.'
+    if (!['DOS_PISOS_48', 'UN_PISO_48'].includes(form.tipoBus)) nextErrors.tipoBus = 'Selecciona un tipo de bus.'
+    if (!['PROGRAMADO', 'CANCELADO'].includes(form.estado)) nextErrors.estado = 'Selecciona un estado.'
+
+    return nextErrors
+  }
+
+  useEffect(() => {
+    if (!showForm) return undefined
+    const closeOnEscape = event => {
+      if (event.key === 'Escape') setShowForm(false)
+    }
+    document.addEventListener('keydown', closeOnEscape)
+    document.body.classList.add('trip-modal-open')
+    return () => {
+      document.removeEventListener('keydown', closeOnEscape)
+      document.body.classList.remove('trip-modal-open')
+    }
+  }, [showForm])
+
+  const loadTrips = async () => {
+    setLoading(true)
+    setError('')
+    try { setRecords(extractAdminRecords(await getAdminStatus('viajes'), 'viajes') || []) }
+    catch (e) { setError(e.message || 'No se pudieron cargar los viajes.') }
+    finally { setLoading(false) }
+  }
+  useEffect(() => { loadTrips() }, [])
+  const submit = async event => {
+    event.preventDefault()
+    const nextErrors = validateForm()
+    setFieldErrors(nextErrors)
+    if (Object.keys(nextErrors).length) {
+      setError('Revisa los datos marcados antes de crear el viaje.')
+      setNotice('')
+      return
+    }
+    setSaving(true); setError(''); setNotice('')
+    try {
+      await createAdminTrip({
+        origen: form.origen.trim(),
+        destino: form.destino.trim(),
+        fecha: form.fecha,
+        horaSalida: form.horaSalida,
+        tarifa: Number(form.tarifa),
+        tipoBus: form.tipoBus,
+        estado: form.estado,
+      })
+      setForm(emptyForm()); setFieldErrors({}); setNotice('Viaje creado correctamente. La capacidad y los asientos se generaron automáticamente.'); setShowForm(false); await loadTrips()
+    } catch (e) { setError(e.message || 'No se pudo crear el viaje.') }
+    finally { setSaving(false) }
+  }
+  return <section className="records-page admin-trips-page">
+    <div className="records-head">
+      <div><p className="eyebrow">OPERACIÓN · VIAJES</p><h1>Programar viaje</h1><p className="subtext">Crea salidas y deja que el sistema configure automáticamente la capacidad y los asientos.</p></div>
+      <div className="records-head-actions"><span className="connection-label online"><i></i>API conectada</span><button type="button" className="primary-button" onClick={openForm}>＋ Nuevo viaje</button></div>
+    </div>
+    <div className="admin-trip-grid">
+      <div className="panel records-panel admin-trip-list">
+        <div className="admin-trip-list-head"><div><h2>Viajes registrados</h2></div><button type="button" className="secondary-button" onClick={loadTrips}>Actualizar</button></div>
+        {loading ? <div className="records-empty"><Activity className="spin" size={24} /><strong>Cargando viajes…</strong></div> : <div className="table-wrap"><table><thead><tr>{['idViaje', 'origen', 'destino', 'fecha', 'horaSalida', 'tarifa', 'tipoBus', 'estado'].map(column => <th key={column}>{({ idViaje: 'ID', origen: 'Origen', destino: 'Destino', fecha: 'Fecha', horaSalida: 'Salida', tarifa: 'Tarifa', tipoBus: 'Bus', estado: 'Estado' })[column]}</th>)}</tr></thead><tbody>{records.length ? records.map((trip, index) => <tr key={trip.idViaje || index}><td>{trip.idViaje ?? '—'}</td><td>{trip.origen ?? '—'}</td><td>{trip.destino ?? '—'}</td><td>{trip.fecha ?? '—'}</td><td>{trip.horaSalida ?? '—'}</td><td>S/ {Number(trip.tarifa ?? 0).toFixed(2)}</td><td>{trip.tipoBus ?? '—'}</td><td>{trip.estado ?? '—'}</td></tr>) : <tr><td colSpan="8">No hay viajes registrados.</td></tr>}</tbody></table></div>}
+      </div>
+    </div>
+    {showForm && <div className="trip-modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) closeForm() }}>
+      <form className="trip-modal" onSubmit={submit}>
+        <div className="trip-modal-head"><div><p className="eyebrow">NUEVO REGISTRO</p><h2>Nuevo viaje</h2><p className="trip-modal-subtitle">Completa los datos para generar la salida y su capacidad.</p></div><button type="button" className="close-button" aria-label="Cerrar" onClick={closeForm}><X size={19} /></button></div>
+        <div className="trip-modal-body">
+          <div className="form-grid">
+            <label className={fieldErrors.tarifa ? 'field-invalid' : ''}>Tarifa (S/)<input required type="number" min="0.01" step="0.01" value={form.tarifa} onChange={e => updateField('tarifa', e.target.value)} aria-invalid={Boolean(fieldErrors.tarifa)} />{fieldErrors.tarifa && <span className="trip-field-error">{fieldErrors.tarifa}</span>}</label>
+            <label className={fieldErrors.origen ? 'field-invalid' : ''}>Origen<input required value={form.origen} onChange={e => updateField('origen', e.target.value)} aria-invalid={Boolean(fieldErrors.origen)} />{fieldErrors.origen && <span className="trip-field-error">{fieldErrors.origen}</span>}</label>
+            <label className={fieldErrors.destino ? 'field-invalid' : ''}>Destino<input required value={form.destino} onChange={e => updateField('destino', e.target.value)} aria-invalid={Boolean(fieldErrors.destino)} />{fieldErrors.destino && <span className="trip-field-error">{fieldErrors.destino}</span>}</label>
+            <label className={fieldErrors.fecha ? 'field-invalid' : ''}>Fecha<input required type="date" min={getTodayInputValue()} value={form.fecha} onChange={e => updateField('fecha', e.target.value)} aria-invalid={Boolean(fieldErrors.fecha)} />{fieldErrors.fecha && <span className="trip-field-error">{fieldErrors.fecha}</span>}</label>
+            <label className={fieldErrors.horaSalida ? 'field-invalid' : ''}>Hora de salida<input required type="time" value={form.horaSalida} onChange={e => updateField('horaSalida', e.target.value)} aria-invalid={Boolean(fieldErrors.horaSalida)} />{fieldErrors.horaSalida && <span className="trip-field-error">{fieldErrors.horaSalida}</span>}</label>
+            <label className={fieldErrors.tipoBus ? 'field-invalid' : ''}>Tipo de bus<select value={form.tipoBus} onChange={e => updateField('tipoBus', e.target.value)} aria-invalid={Boolean(fieldErrors.tipoBus)}><option value="DOS_PISOS_48">Dos pisos · 60 asientos</option><option value="UN_PISO_48">Un piso · 48 asientos</option></select>{fieldErrors.tipoBus && <span className="trip-field-error">{fieldErrors.tipoBus}</span>}</label>
+            <label className={fieldErrors.estado ? 'field-invalid' : ''}>Estado<select value={form.estado} onChange={e => updateField('estado', e.target.value)} aria-invalid={Boolean(fieldErrors.estado)}><option value="PROGRAMADO">Programado</option><option value="CANCELADO">Cancelado</option></select>{fieldErrors.estado && <span className="trip-field-error">{fieldErrors.estado}</span>}</label>
+          </div>
+          <div className="trip-capacity-note"><strong>{form.tipoBus === 'UN_PISO_48' ? 'Bus de un piso' : 'Bus de dos pisos'}</strong><span>{form.tipoBus === 'UN_PISO_48' ? '48 asientos · 1 piso · 4 columnas' : '60 asientos · piso 1: 1–12 · piso 2: 1–48'}</span></div>
+          {error && <div className="sale-note error">{error}</div>}
+          {notice && <div className="sale-note success">{notice}</div>}
+        </div>
+        <div className="trip-modal-actions"><button type="button" className="secondary-button" onClick={closeForm}>Cancelar</button><button type="submit" className="primary-button" disabled={saving}>{saving ? 'Creando…' : 'Crear viaje'}</button></div>
+      </form>
+    </div>}
+  </section>
 }
 
 function OperationalView({ view, resource }) {
@@ -147,18 +333,17 @@ function OperationalView({ view, resource }) {
     head.insertBefore(wrapper, connection || null)
     return () => wrapper.remove()
   }, [view, resource])
-  const records = Array.isArray(result) ? result : Array.isArray(result?.items) ? result.items : Array.isArray(result?.data) ? result.data : (result?.data && typeof result.data === 'object' ? [result.data] : result && (result.id || result.codigo || result.estado) ? [result] : null)
-  const columns = view === 'Pagos' ? ['codigo', 'importe', 'medioPago', 'estado', 'createdAt'] : view === 'Pasajeros' ? ['dni', 'nombreCompleto', 'estado', 'codigo'] : view === 'Pasajes' ? ['codigo', 'estado', 'documentoUrl', 'fechaEmision'] : view === 'Reservas' ? ['idReserva', 'idViaje', 'numeroAsiento', 'piso', 'estado', 'dni', 'vencimiento'] : ['estado', 'codigo', 'createdAt']
-  const labels = { idReserva: 'Reserva', idViaje: 'Viaje', idAsiento: 'ID asiento', numeroAsiento: 'Asiento', piso: 'Piso', codigo: 'Código', importe: 'Importe', monto: 'Importe', medioPago: 'Medio de pago', estado: 'Estado', createdAt: 'Fecha', fechaEmision: 'Fecha de emisión', vencimiento: 'Vencimiento', documentoUrl: 'Documento', dni: 'DNI', nombreCompleto: 'Pasajero' }
-  const valueFor = (row, column) => { if (column === 'importe') { const amount = row.importe ?? row.monto; return amount === undefined || amount === null ? '—' : `S/ ${Number(amount).toFixed(2)}` }; if (['createdAt', 'fechaEmision', 'fecha', 'fechaCreacion', 'vencimiento'].includes(column) && row[column]) return new Date(row[column]).toLocaleString('es-PE', { dateStyle: 'short', timeStyle: 'short' }); return row[column] ?? '—' }
+  const records = extractAdminRecords(result, resource)
+  const columns = view === 'Pagos' ? ['codigo', 'importe', 'medioPago', 'estado', 'createdAt'] : view === 'Pasajeros' ? ['dni', 'nombreCompleto', 'estado', 'codigo'] : view === 'Pasajes' ? ['idPasaje', 'codigo', 'estado', 'documentoUrl', 'fechaEmision'] : view === 'Reservas' ? ['idReserva', 'idViaje', 'numeroAsiento', 'piso', 'estado', 'dni', 'vencimiento'] : ['idViaje', 'origen', 'destino', 'fecha', 'horaSalida', 'tarifa', 'estado']
+  const labels = { idPasaje: 'Pasaje', idReserva: 'Reserva', idViaje: 'Viaje', origen: 'Origen', destino: 'Destino', horaSalida: 'Salida', tarifa: 'Tarifa', idAsiento: 'ID asiento', numeroAsiento: 'Asiento', piso: 'Piso', codigo: 'Código', importe: 'Importe', monto: 'Importe', medioPago: 'Medio de pago', estado: 'Estado', createdAt: 'Fecha', fecha: 'Fecha de viaje', fechaEmision: 'Fecha de emisión', vencimiento: 'Vencimiento', documentoUrl: 'Documento', dni: 'DNI', nombreCompleto: 'Pasajero' }
+  const valueFor = (row, column) => { const raw = getRecordValue(row, column); if (column === 'importe' || column === 'tarifa') return raw === undefined ? '—' : `S/ ${Number(raw).toFixed(2)}`; if (['createdAt', 'fechaEmision', 'fecha', 'fechaCreacion', 'vencimiento'].includes(column) && raw) return new Date(raw).toLocaleString('es-PE', { dateStyle: 'short', timeStyle: 'short' }); return raw ?? '—' }
   const filteredRecords = records ? records.filter(row => {
     if (!search.trim()) return true
     const normalized = value => String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
-    return normalized(Object.values(row).join(' ')).includes(normalized(search))
+    return normalized(JSON.stringify(row)).includes(normalized(search))
   }) : []
-  const totalPages = records ? Math.max(1, Math.ceil(filteredRecords.length / pageSize)) : 1
+  const totalPages = Math.max(1, Math.ceil(filteredRecords.length / pageSize))
   const visibleRecords = records ? filteredRecords.slice((page - 1) * pageSize, page * pageSize) : []
-<<<<<<< HEAD
   useEffect(() => {
     if (page > totalPages) setPage(totalPages)
   }, [page, totalPages])
@@ -194,9 +379,6 @@ function OperationalView({ view, resource }) {
         </> : <div className="records-empty"><FileText size={24} /><strong>El endpoint aún no entrega registros</strong><p>La API respondió correctamente, pero `/api/v1/admin/{resource}` devuelve un estado general en lugar de una colección. Cuando retorne un arreglo, esta vista lo mostrará automáticamente.</p><pre>{JSON.stringify(result, null, 2)}</pre></div>}
     </div>
   </section>
-=======
-  return <section className="records-page"><div className="records-head"><div><p className="eyebrow">OPERACIÓN · {view.toUpperCase()}</p><h1>{view === 'Pasajes' ? 'Pasajes vendidos' : view}</h1><p className="subtext">Consulta los registros entregados por el servicio administrativo.</p></div><span className="connection-label online"><i></i>API conectada</span></div><div className="panel records-panel">{loading ? <div className="records-empty"><Activity className="spin" size={24} /><strong>Cargando registros…</strong></div> : error ? <div className="records-empty"><X size={24} /><strong>No se pudo cargar {view.toLowerCase()}</strong><p>{error}</p></div> : records ? <><div className="table-wrap"><table><thead><tr>{columns.map(column => <th key={column}>{labels[column] || column}</th>)}</tr></thead><tbody>{visibleRecords.length ? visibleRecords.map((row, index) => <tr key={row.id || row.idReserva || row.codigo || index}>{columns.map(column => <td key={column}>{column === 'documentoUrl' && row[column] ? <a href={row[column]} target="_blank" rel="noreferrer" className="text-button">Descargar <Download size={13} /></a> : String(valueFor(row, column))}</td>)}</tr>) : <tr><td colSpan={columns.length}>No hay registros disponibles.</td></tr>}</tbody></table></div>{records.length > 0 && <div className="pagination"><span>{records.length ? `${(page - 1) * pageSize + 1}–${Math.min(page * pageSize, records.length)} de ${records.length} ${view.toLowerCase()}` : `0 ${view.toLowerCase()}`}</span><label>Mostrar<select value={pageSize} onChange={e => setPageSize(Number(e.target.value))}><option value="10">10</option><option value="25">25</option><option value="50">50</option></select></label><button disabled={page === 1} onClick={() => setPage(p => Math.max(1, p - 1))}><ChevronLeft size={15} /></button><strong>Página {page} de {totalPages}</strong><button disabled={page === totalPages} onClick={() => setPage(p => Math.min(totalPages, p + 1))}><ChevronRight size={15} /></button></div>}</> : <div className="records-empty"><FileText size={24} /><strong>El endpoint aún no entrega registros</strong><p>La API respondió correctamente, pero `/api/v1/admin/{resource}` devuelve un estado general en lugar de una colección. Cuando retorne un arreglo, esta vista lo mostrará automáticamente.</p><pre>{JSON.stringify(result, null, 2)}</pre></div>}</div></section>
->>>>>>> origin/main
 }
 
 function LoginScreen({ onLogin }) {
@@ -233,14 +415,14 @@ function SalesDeskLegacy({ sale, setSale }) {
   const reset = () => setSale(null)
   useEffect(() => {
     if (current.step !== 2 && current.step !== 5) return undefined
-    const panel = document.querySelector('.sale-main')
+    const panel = document.querySelector('.sale-main .sale-form')
     if (!panel) return undefined
     const button = document.createElement('button')
     button.type = 'button'
     button.className = 'secondary-button workflow-back'
     button.textContent = '← Atrás'
     button.onclick = () => setSale(previous => ({ ...previous, step: Math.max(1, previous.step - 1) }))
-    panel.appendChild(button)
+    panel.prepend(button)
     return () => button.remove()
   }, [current.step, setSale])
   useEffect(() => {
@@ -270,15 +452,21 @@ function SalesDesk({ sale, setSale }) {
   const update = patch => setSale({ ...current, ...patch })
   const searchTrips = async event => {
     event.preventDefault()
+    const requestedDate = new Date(`${current.fecha}T00:00:00`)
+    if (Number.isNaN(requestedDate.getTime()) || requestedDate.getTime() < new Date(new Date().toDateString()).getTime()) {
+      return update({ message: 'No puedes buscar pasajes para una fecha que ya pasó.' })
+    }
     update({ busy: true, message: '' })
     try {
       const result = await getAvailability(current)
-      update({ trips: Array.isArray(result) ? result : result?.viajes || [], step: 2, busy: false })
+      const trips = (Array.isArray(result) ? result : result?.viajes || []).filter(trip => !isTripPast(trip))
+      update({ trips, step: 2, busy: false, message: trips.length ? '' : 'No hay salidas disponibles para una fecha u hora futura.' })
     } catch (error) {
       update({ trips: [], step: 2, busy: false, message: error.message || 'No se pudieron cargar las salidas.' })
     }
   }
   const chooseTrip = async trip => {
+    if (isTripPast(trip)) return update({ message: 'Esta salida ya pasó y no se puede comprar.' })
     update({ busy: true, message: '' })
     try {
       const map = await getTripSeats(trip.idViaje)
@@ -328,6 +516,7 @@ function SalesDesk({ sale, setSale }) {
     update({ step: 3, message: '' })
   }
   const reserve = async () => {
+    if (isTripPast(current.selectedTrip)) return update({ message: 'La salida ya pasó y no se puede reservar.' })
     if (current.passengers.some(item => !item.dni || !item.nombres || !item.apellidos)) return update({ message: 'Completa los datos de todos los pasajeros.' })
     update({ busy: true, message: '' })
     try {
