@@ -320,9 +320,6 @@ function OperationalView({ view, resource }) {
   useEffect(() => { let mounted = true; setLoading(true); setError(''); getAdminStatus(resource).then(data => mounted && setResult(data)).catch(e => mounted && setError(e.message)).finally(() => mounted && setLoading(false)); return () => { mounted = false } }, [resource])
   useEffect(() => setPage(1), [resource, pageSize, search])
   useEffect(() => {
-    if (page > totalPages) setPage(totalPages)
-  }, [page, totalPages])
-  useEffect(() => {
     if (!resource) return undefined
     const head = document.querySelector('.records-head')
     if (!head || head.querySelector('.records-search')) return undefined
@@ -347,6 +344,9 @@ function OperationalView({ view, resource }) {
   }) : []
   const totalPages = Math.max(1, Math.ceil(filteredRecords.length / pageSize))
   const visibleRecords = records ? filteredRecords.slice((page - 1) * pageSize, page * pageSize) : []
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages)
+  }, [page, totalPages])
   return <section className="records-page">
     <div className="records-head">
       <div><p className="eyebrow">OPERACIÓN · {view.toUpperCase()}</p><h1>{view === 'Pasajes' ? 'Pasajes vendidos' : view}</h1><p className="subtext">Consulta los registros entregados por el servicio administrativo.</p></div>
