@@ -4,6 +4,14 @@ export async function createReservation(payload) {
   return (await request('/api/v1/reservas', { method: 'POST', body: JSON.stringify(payload) })).data
 }
 
+export async function holdSeat(payload) {
+  return (await request('/api/v1/reservas/hold', { method: 'POST', body: JSON.stringify(payload) })).data
+}
+
+export async function updateReservationPassenger(idReserva, payload) {
+  return (await request(`/api/v1/reservas/${idReserva}/pasajero`, { method: 'PATCH', body: JSON.stringify(payload) })).data
+}
+
 export async function createMultipleReservations(payload) {
   return (await request('/api/v1/reservas/multiples', { method: 'POST', body: JSON.stringify(payload) })).data
 }

@@ -12,9 +12,10 @@ import { checkContracts, checkGateway } from './features/system/services/systemS
 import { getAdminStatus } from './features/admin/services/adminService'
 import { getAvailability, getTripSeats } from './features/travel/services/travelService'
 import { lookupDni, validatePassenger } from './features/passengers/services/passengerService'
-import { createMultipleReservations, createReservation, getReservationStatus } from './features/reservations/services/reservationService'
+import { createMultipleReservations, createReservation, getReservationStatus, holdSeat, updateReservationPassenger, releaseReservation } from './features/reservations/services/reservationService'
 import { createPayment, getApprovedPayment } from './features/payments/services/paymentService'
 import { issueTicket } from './features/tickets/services/ticketService'
+import { API_BASE_URL } from './shared/api/http'
 
 const nav = [
   { label: 'Ventanilla', icon: Ticket },
@@ -264,17 +265,39 @@ function SalesDesk({ sale, setSale }) {
       update({ selectedTrip: null, busy: false, message: error.message || 'No se pudo cargar el mapa de asientos.' })
     }
   }
-  const toggleSeat = seat => {
+  const toggleSeat = async seat => {
     const details = current.selectedTrip?.seatDetails || []
     const metadata = details.find(item => seatToken(item) === seat)
-    if (metadata?.estado && metadata.estado !== 'DISPONIBLE') return
-    const selected = current.selectedSeats.includes(seat) ? current.selectedSeats.filter(item => item !== seat) : [...current.selectedSeats, seat]
+    const isSelected = current.selectedSeats.includes(seat)
+    if (!isSelected && metadata?.estado && metadata.estado !== 'DISPONIBLE') return
+    if (isSelected) {
+      const reservation = current.reservations.find(item => item.idAsiento === metadata?.idAsiento)
+      if (reservation) {
+        try { await releaseReservation(reservation.idReserva) } catch (error) { return update({ message: error.message || 'No se pudo liberar el asiento.' }) }
+      }
+    } else {
+      if (current.selectedSeats.length >= 10) return
+      try {
+        const reservation = await holdSeat({ idViaje: current.selectedTrip.idViaje, idAsiento: metadata.idAsiento, idCanal: 1 })
+        const reservations = [...current.reservations, reservation]
+        const selected = [...current.selectedSeats, seat]
+        const passengers = selected.map(token => {
+          const item = details.find(detail => seatToken(detail) === token)
+          return current.passengers.find(passenger => passenger.seatToken === token) || { seatToken: token, idAsiento: item?.idAsiento, piso: item?.piso, dni: '', nombres: '', apellidos: '' }
+        })
+        const seatDetails = details.map(item => item.idAsiento === metadata.idAsiento ? { ...item, estado: 'TEMPORAL', disponible: false, idReserva: reservation.idReserva } : item)
+        return update({ selectedSeats: selected, passengers, reservations, reservationStatuses: [...current.reservationStatuses, { ...reservation, puedePagar: true }], selectedTrip: { ...current.selectedTrip, seatDetails }, message: '' })
+      } catch (error) { return update({ message: error.message || 'El asiento acaba de ser tomado por otro usuario.' }) }
+    }
+    const selected = current.selectedSeats.filter(item => item !== seat)
+    const reservations = current.reservations.filter(item => item.idAsiento !== metadata?.idAsiento)
     if (selected.length > 10) return
     const passengers = selected.map(token => {
       const item = details.find(detail => seatToken(detail) === token)
       return current.passengers.find(passenger => passenger.seatToken === token) || { seatToken: token, idAsiento: item?.idAsiento, piso: item?.piso, dni: '', nombres: '', apellidos: '' }
     })
-    update({ selectedSeats: selected, passengers, message: '' })
+    const seatDetails = details.map(item => item.idAsiento === metadata?.idAsiento ? { ...item, estado: 'DISPONIBLE', disponible: true, idReserva: null } : item)
+    update({ selectedSeats: selected, passengers, reservations, reservationStatuses: current.reservationStatuses.filter(item => item.idReserva !== current.reservations.find(r => r.idAsiento === metadata?.idAsiento)?.idReserva), selectedTrip: { ...current.selectedTrip, seatDetails }, message: '' })
   }
   const updatePassenger = (index, patch) => update({ passengers: current.passengers.map((passenger, i) => i === index ? { ...passenger, ...patch } : passenger) })
   const lookupPassenger = async index => {
@@ -293,12 +316,8 @@ function SalesDesk({ sale, setSale }) {
     if (current.passengers.some(item => !item.dni || !item.nombres || !item.apellidos)) return update({ message: 'Completa los datos de todos los pasajeros.' })
     update({ busy: true, message: '' })
     try {
-      const payload = { idViaje: current.selectedTrip.idViaje, idCanal: 1, pasajeros: current.passengers.map(({ idAsiento, dni, nombres, apellidos }) => ({ idAsiento, pasajero: { dni, nombres, apellidos } })) }
-      const result = current.passengers.length === 1
-        ? { reservas: [await createReservation({ idViaje: payload.idViaje, idAsiento: payload.pasajeros[0].idAsiento, idCanal: payload.idCanal, pasajero: payload.pasajeros[0].pasajero })] }
-        : await createMultipleReservations(payload)
-      const reservations = result.reservas || []
-      update({ reservations, reservationStatuses: reservations.map(reservation => ({ idReserva: reservation.idReserva, estado: reservation.estado, minutosRestantes: reservation.minutosRestantes ?? null, puedePagar: true })), step: 5, busy: false })
+      await Promise.all(current.passengers.map(passenger => updateReservationPassenger(passenger.reservationId || current.reservations.find(r => r.idAsiento === passenger.idAsiento)?.idReserva, { dni: passenger.dni, nombres: passenger.nombres, apellidos: passenger.apellidos })))
+      update({ step: 5, busy: false })
     } catch (error) { update({ busy: false, message: error.message || 'No se pudieron crear las reservas.' }) }
   }
   const pay = async () => {
@@ -328,6 +347,45 @@ function SalesDesk({ sale, setSale }) {
   const seatById = new Map(seatDetails.map(seat => [seat.idAsiento, seat]))
   const selectedSeatData = (current.selectedTrip?.seatDetails || []).filter(seat => current.selectedSeats.includes(seatToken(seat)))
   const totalAmount = selectedSeatData.reduce((sum, seat) => sum + Number(seat.precio ?? current.selectedTrip?.tarifaBase ?? current.selectedTrip?.tarifa ?? 0), 0)
+  useEffect(() => {
+    const tripId = current.selectedTrip?.idViaje
+    const token = localStorage.getItem('cruz_token')
+    if (current.step !== 2 || !tripId || !token) return undefined
+    const base = API_BASE_URL.replace(/^http/, 'ws').replace(/\/$/, '')
+    const socket = new WebSocket(`${base}/api/v1/reservas/ws/${tripId}?access_token=${encodeURIComponent(token)}`)
+    socket.onmessage = event => {
+      try {
+        const payload = JSON.parse(event.data)
+        if (payload.type === 'snapshot') {
+          setSale(previous => {
+            if (!previous?.selectedTrip || previous.selectedTrip.idViaje !== tripId) return previous
+            const live = new Map((payload.asientos || []).map(seat => [Number(seat.idAsiento), seat]))
+            const seatDetails = (previous.selectedTrip.seatDetails || []).map(seat => {
+              const update = live.get(Number(seat.idAsiento))
+              return update ? { ...seat, ...update, precio: seat.precio } : seat
+            })
+            const selectedSeats = previous.selectedSeats.filter(tokenValue => {
+              const seat = seatDetails.find(item => seatToken(item) === tokenValue)
+              return seat?.idReserva && previous.reservations.some(reservation => reservation.idReserva === seat.idReserva)
+            })
+            return { ...previous, selectedSeats, selectedTrip: { ...previous.selectedTrip, seatDetails } }
+          })
+        }
+        if (payload.type === 'seat_held' || payload.type === 'seat_released') {
+          setSale(previous => {
+            if (!previous?.selectedTrip || previous.selectedTrip.idViaje !== tripId) return previous
+            const seatDetails = (previous.selectedTrip.seatDetails || []).map(seat => Number(seat.idAsiento) === Number(payload.idAsiento)
+              ? { ...seat, estado: payload.estado === 'VENCIDA' || payload.estado === 'CANCELADA' ? 'DISPONIBLE' : payload.estado, disponible: payload.type === 'seat_released', idReserva: payload.type === 'seat_released' ? null : payload.idReserva }
+              : seat)
+            const own = previous.reservations.some(reservation => reservation.idReserva === payload.idReserva)
+            return { ...previous, selectedTrip: { ...previous.selectedTrip, seatDetails }, message: payload.type === 'seat_held' && !own ? `El asiento ${payload.idAsiento} fue reservado por otra ventanilla.` : previous.message }
+          })
+        }
+      } catch { /* mensaje inválido: se conserva el estado actual */ }
+    }
+    socket.onerror = () => setSale(previous => previous ? { ...previous, message: 'Se perdió la actualización en tiempo real; vuelve a seleccionar el viaje.' } : previous)
+    return () => socket.close()
+  }, [current.step, current.selectedTrip?.idViaje, setSale])
   useEffect(() => {
     if (current.step !== 5 || !current.reservations.length) return undefined
     let mounted = true
