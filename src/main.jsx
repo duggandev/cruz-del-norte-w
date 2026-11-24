@@ -16,6 +16,7 @@ import { createMultipleReservations, createReservation, getReservationStatus, ho
 import { createPayment, getApprovedPayment } from './features/payments/services/paymentService'
 import { issueTicket } from './features/tickets/services/ticketService'
 import { API_BASE_URL } from './shared/api/http'
+import { subscribeSeatLocks } from './shared/supabase'
 
 const nav = [
   { label: 'Ventanilla', icon: Ticket },
@@ -349,42 +350,20 @@ function SalesDesk({ sale, setSale }) {
   const totalAmount = selectedSeatData.reduce((sum, seat) => sum + Number(seat.precio ?? current.selectedTrip?.tarifaBase ?? current.selectedTrip?.tarifa ?? 0), 0)
   useEffect(() => {
     const tripId = current.selectedTrip?.idViaje
-    const token = localStorage.getItem('cruz_token')
-    if (current.step !== 2 || !tripId || !token) return undefined
-    const base = API_BASE_URL.replace(/^http/, 'ws').replace(/\/$/, '')
-    const socket = new WebSocket(`${base}/api/v1/reservas/ws/${tripId}?access_token=${encodeURIComponent(token)}`)
-    socket.onmessage = event => {
-      try {
-        const payload = JSON.parse(event.data)
-        if (payload.type === 'snapshot') {
-          setSale(previous => {
-            if (!previous?.selectedTrip || previous.selectedTrip.idViaje !== tripId) return previous
-            const live = new Map((payload.asientos || []).map(seat => [Number(seat.idAsiento), seat]))
-            const seatDetails = (previous.selectedTrip.seatDetails || []).map(seat => {
-              const update = live.get(Number(seat.idAsiento))
-              return update ? { ...seat, ...update, precio: seat.precio } : seat
-            })
-            const selectedSeats = previous.selectedSeats.filter(tokenValue => {
-              const seat = seatDetails.find(item => seatToken(item) === tokenValue)
-              return seat?.idReserva && previous.reservations.some(reservation => reservation.idReserva === seat.idReserva)
-            })
-            return { ...previous, selectedSeats, selectedTrip: { ...previous.selectedTrip, seatDetails } }
-          })
-        }
-        if (payload.type === 'seat_held' || payload.type === 'seat_released') {
-          setSale(previous => {
-            if (!previous?.selectedTrip || previous.selectedTrip.idViaje !== tripId) return previous
-            const seatDetails = (previous.selectedTrip.seatDetails || []).map(seat => Number(seat.idAsiento) === Number(payload.idAsiento)
-              ? { ...seat, estado: payload.estado === 'VENCIDA' || payload.estado === 'CANCELADA' ? 'DISPONIBLE' : payload.estado, disponible: payload.type === 'seat_released', idReserva: payload.type === 'seat_released' ? null : payload.idReserva }
-              : seat)
-            const own = previous.reservations.some(reservation => reservation.idReserva === payload.idReserva)
-            return { ...previous, selectedTrip: { ...previous.selectedTrip, seatDetails }, message: payload.type === 'seat_held' && !own ? `El asiento ${payload.idAsiento} fue reservado por otra ventanilla.` : previous.message }
-          })
-        }
-      } catch { /* mensaje inválido: se conserva el estado actual */ }
-    }
-    socket.onerror = () => setSale(previous => previous ? { ...previous, message: 'Se perdió la actualización en tiempo real; vuelve a seleccionar el viaje.' } : previous)
-    return () => socket.close()
+    if (current.step !== 2 || !tripId) return undefined
+    return subscribeSeatLocks(tripId, ({ eventType, new: next, old: previousLock }) => {
+      const lock = eventType === 'DELETE' ? previousLock : next
+      if (!lock) return
+      setSale(previous => {
+        if (!previous?.selectedTrip || previous.selectedTrip.idViaje !== tripId) return previous
+        const released = eventType === 'DELETE' || !['TEMPORAL', 'CONFIRMADA'].includes(lock.estado)
+        const seatDetails = (previous.selectedTrip.seatDetails || []).map(seat => Number(seat.idAsiento) === Number(lock.id_asiento)
+          ? { ...seat, estado: released ? 'DISPONIBLE' : lock.estado, disponible: released, idReserva: released ? null : lock.id_reserva }
+          : seat)
+        const own = previous.reservations.some(reservation => Number(reservation.idReserva) === Number(lock.id_reserva))
+        return { ...previous, selectedTrip: { ...previous.selectedTrip, seatDetails }, message: !released && !own ? `El asiento ${lock.id_asiento} fue reservado por otra ventanilla.` : previous.message }
+      })
+    })
   }, [current.step, current.selectedTrip?.idViaje, setSale])
   useEffect(() => {
     if (current.step !== 5 || !current.reservations.length) return undefined
@@ -417,7 +396,8 @@ function SalesDesk({ sale, setSale }) {
     const buttons = [...document.querySelectorAll('.seat-grid .seat')]
     buttons.forEach((button, index) => {
       const seat = details[index]
-      const sold = seat?.estado && seat.estado !== 'DISPONIBLE'
+      const selected = seat ? current.selectedSeats.includes(seatToken(seat)) : false
+      const sold = seat?.estado && seat.estado !== 'DISPONIBLE' && !selected
       button.classList.toggle('sold', Boolean(sold))
       if (seat) button.textContent = String(seat.numero ?? seat.idAsiento)
       const columns = Number(seat?.columnas || 4)
@@ -429,7 +409,7 @@ function SalesDesk({ sale, setSale }) {
       button.title = seat ? `${seat.tipo || 'Asiento'} · Piso ${seat.piso || '—'} · ${seat.columna || '—'} · S/ ${seat.precio ?? '—'}` : ''
     })
     return undefined
-  }, [current.step, current.selectedTrip])
+  }, [current.step, current.selectedTrip, current.selectedSeats])
   useEffect(() => {
     if (current.step !== 6 || !current.tickets?.length) return undefined
     const box = document.querySelector('.sales-desk .ticket-code')

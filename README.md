@@ -64,3 +64,6 @@ Además, los endpoints `/api/v1/admin/*` actualmente responden un estado general
 7. Solo si el pago queda `APROBADO`, se emite el pasaje con SC-05 y se muestra/descarga el PDF.
 
 Si disponibilidad devuelve un error o el backend aún no tiene datos para una fecha, la pantalla informa el problema y muestra resultados demo para poder recorrer el flujo visualmente; las llamadas de reserva, pago y emisión siguen apuntando al gateway real.
+## Tiempo real de asientos
+
+El mapa de asientos escucha `public.seat_locks` mediante Supabase Realtime. Configura `VITE_SUPABASE_URL` y `VITE_SUPABASE_PUBLISHABLE_KEY` (ya incluidos en `.env.example`) junto con `VITE_API_BASE_URL`. El bloqueo se crea en el gateway y se libera automáticamente a los 15 minutos si no se completa el pago.
