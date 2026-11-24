@@ -351,7 +351,7 @@ function SalesDesk({ sale, setSale }) {
   useEffect(() => {
     const tripId = current.selectedTrip?.idViaje
     if (current.step !== 2 || !tripId) return undefined
-    return subscribeSeatLocks(tripId, ({ eventType, new: next, old: previousLock }) => {
+    const applyLock = (eventType, next, previousLock) => {
       const lock = eventType === 'DELETE' ? previousLock : next
       if (!lock) return
       setSale(previous => {
@@ -363,7 +363,54 @@ function SalesDesk({ sale, setSale }) {
         const own = previous.reservations.some(reservation => Number(reservation.idReserva) === Number(lock.id_reserva))
         return { ...previous, selectedTrip: { ...previous.selectedTrip, seatDetails }, message: !released && !own ? `El asiento ${lock.id_asiento} fue reservado por otra ventanilla.` : previous.message }
       })
-    })
+    }
+    const removeSupabase = subscribeSeatLocks(tripId, ({ eventType, new: next, old: previousLock }) => applyLock(eventType, next, previousLock))
+
+    // Compatibilidad con despliegues que todavía escriben en SQLite/PostgreSQL local.
+    // Cuando DATABASE_URL apunta a Supabase, el trigger de seat_locks será el canal principal.
+    const token = localStorage.getItem('cruz_token')
+    const base = API_BASE_URL.replace(/^http/, 'ws').replace(/\/$/, '')
+    let socket
+    let retryTimer
+    let stopped = false
+    let retryCount = 0
+    const connect = () => {
+      if (stopped || !token) return
+      socket = new WebSocket(`${base}/api/v1/reservas/ws/${tripId}?access_token=${encodeURIComponent(token)}`)
+      socket.onmessage = event => {
+        try {
+          const payload = JSON.parse(event.data)
+          if (payload.type === 'snapshot') {
+            setSale(previous => {
+              if (!previous?.selectedTrip || previous.selectedTrip.idViaje !== tripId) return previous
+              const live = new Map((payload.asientos || []).map(seat => [Number(seat.idAsiento), seat]))
+              const seatDetails = (previous.selectedTrip.seatDetails || []).map(seat => {
+                const update = live.get(Number(seat.idAsiento))
+                return update ? { ...seat, ...update, precio: seat.precio } : seat
+              })
+              return { ...previous, selectedTrip: { ...previous.selectedTrip, seatDetails } }
+            })
+          } else if (payload.type === 'seat_held') {
+            applyLock('INSERT', { id_asiento: payload.idAsiento, id_reserva: payload.idReserva, estado: payload.estado }, null)
+          } else if (payload.type === 'seat_released') {
+            applyLock('DELETE', null, { id_asiento: payload.idAsiento, id_reserva: payload.idReserva, estado: payload.estado })
+          }
+        } catch { /* se conserva el último estado válido */ }
+      }
+      socket.onopen = () => { retryCount = 0 }
+      socket.onclose = () => {
+        if (stopped) return
+        retryTimer = setTimeout(connect, Math.min(1000 * (2 ** retryCount++), 10000))
+      }
+      socket.onerror = () => socket.close()
+    }
+    connect()
+    return () => {
+      stopped = true
+      clearTimeout(retryTimer)
+      removeSupabase()
+      if (socket && socket.readyState < WebSocket.CLOSING) socket.close()
+    }
   }, [current.step, current.selectedTrip?.idViaje, setSale])
   useEffect(() => {
     if (current.step !== 5 || !current.reservations.length) return undefined
