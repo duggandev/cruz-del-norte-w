@@ -354,14 +354,19 @@ function SalesDesk({ sale, setSale }) {
     const applyLock = (eventType, next, previousLock) => {
       const lock = eventType === 'DELETE' ? previousLock : next
       if (!lock) return
+      // Supabase usa snake_case y el websocket camelCase.
+      const seatId = lock.id_asiento ?? lock.idAsiento
+      const reservationId = lock.id_reserva ?? lock.idReserva
+      const lockState = lock.estado ?? lock.status
+      if (seatId == null) return
       setSale(previous => {
         if (!previous?.selectedTrip || previous.selectedTrip.idViaje !== tripId) return previous
-        const released = eventType === 'DELETE' || !['TEMPORAL', 'CONFIRMADA'].includes(lock.estado)
-        const seatDetails = (previous.selectedTrip.seatDetails || []).map(seat => Number(seat.idAsiento) === Number(lock.id_asiento)
-          ? { ...seat, estado: released ? 'DISPONIBLE' : lock.estado, disponible: released, idReserva: released ? null : lock.id_reserva }
+        const released = eventType === 'DELETE' || !['TEMPORAL', 'CONFIRMADA'].includes(lockState)
+        const seatDetails = (previous.selectedTrip.seatDetails || []).map(seat => Number(seat.idAsiento) === Number(seatId)
+          ? { ...seat, estado: released ? 'DISPONIBLE' : lockState, disponible: released, idReserva: released ? null : reservationId }
           : seat)
-        const own = previous.reservations.some(reservation => Number(reservation.idReserva) === Number(lock.id_reserva))
-        return { ...previous, selectedTrip: { ...previous.selectedTrip, seatDetails }, message: !released && !own ? `El asiento ${lock.id_asiento} fue reservado por otra ventanilla.` : previous.message }
+        const own = previous.reservations.some(reservation => Number(reservation.idReserva) === Number(reservationId))
+        return { ...previous, selectedTrip: { ...previous.selectedTrip, seatDetails }, message: !released && !own ? `El asiento ${seatId} fue reservado por otra ventanilla.` : previous.message }
       })
     }
     const removeSupabase = subscribeSeatLocks(tripId, ({ eventType, new: next, old: previousLock }) => applyLock(eventType, next, previousLock))
@@ -391,9 +396,9 @@ function SalesDesk({ sale, setSale }) {
               return { ...previous, selectedTrip: { ...previous.selectedTrip, seatDetails } }
             })
           } else if (payload.type === 'seat_held') {
-            applyLock('INSERT', { id_asiento: payload.idAsiento, id_reserva: payload.idReserva, estado: payload.estado }, null)
+            applyLock('INSERT', { idAsiento: payload.idAsiento, idReserva: payload.idReserva, estado: payload.estado }, null)
           } else if (payload.type === 'seat_released') {
-            applyLock('DELETE', null, { id_asiento: payload.idAsiento, id_reserva: payload.idReserva, estado: payload.estado })
+            applyLock('DELETE', null, { idAsiento: payload.idAsiento, idReserva: payload.idReserva, estado: payload.estado })
           }
         } catch { /* se conserva el último estado válido */ }
       }
@@ -444,8 +449,11 @@ function SalesDesk({ sale, setSale }) {
     buttons.forEach((button, index) => {
       const seat = details[index]
       const selected = seat ? current.selectedSeats.includes(seatToken(seat)) : false
-      const sold = seat?.estado && seat.estado !== 'DISPONIBLE' && !selected
+      const own = seat?.idReserva != null && current.reservations.some(reservation => Number(reservation.idReserva) === Number(seat.idReserva))
+      const heldByOther = seat?.estado && ['TEMPORAL', 'CONFIRMADA'].includes(seat.estado) && !selected && !own
+      const sold = seat?.estado && seat.estado !== 'DISPONIBLE' && !selected && !heldByOther
       button.classList.toggle('sold', Boolean(sold))
+      button.classList.toggle('held-by-other', Boolean(heldByOther))
       if (seat) button.textContent = String(seat.numero ?? seat.idAsiento)
       const columns = Number(seat?.columnas || 4)
       const fallbackIndex = details.findIndex(item => item.idAsiento === seat?.idAsiento)
@@ -456,7 +464,7 @@ function SalesDesk({ sale, setSale }) {
       button.title = seat ? `${seat.tipo || 'Asiento'} · Piso ${seat.piso || '—'} · ${seat.columna || '—'} · S/ ${seat.precio ?? '—'}` : ''
     })
     return undefined
-  }, [current.step, current.selectedTrip, current.selectedSeats])
+  }, [current.step, current.selectedTrip, current.selectedSeats, current.reservations])
   useEffect(() => {
     if (current.step !== 6 || !current.tickets?.length) return undefined
     const box = document.querySelector('.sales-desk .ticket-code')
@@ -507,7 +515,7 @@ function SalesDesk({ sale, setSale }) {
     tabs.className = 'floor-tabs'
     const legend = document.createElement('div')
     legend.className = 'seat-legend'
-    legend.innerHTML = '<span><i class="legend-dot available"></i>Disponible</span><span><i class="legend-dot selected"></i>Seleccionado</span><span><i class="legend-dot sold"></i>Vendido</span>'
+    legend.innerHTML = '<span><i class="legend-dot available"></i>Disponible</span><span><i class="legend-dot selected"></i>Seleccionado</span><span><i class="legend-dot held-by-other"></i>Ocupado en otra ventanilla</span><span><i class="legend-dot sold"></i>Vendido</span>'
     const buttons = [...grid.querySelectorAll('.seat')]
     const showFloor = floor => {
       const floorSeats = details.filter(item => Number(item.piso || 1) === floor)
