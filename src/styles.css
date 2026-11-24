@@ -41,7 +41,7 @@ button { cursor: pointer; }
 .seat:not(.selected):not(.sold) { background:#fff5a8; border-color:#e6d85d; color:#536a35; }
 .seat:hover { border-color:#4ca68d; background:#edf8f3; }
 .seat.sold { background:#f3f5f4; color:#aab8b5; border-color:#e1e8e5; text-decoration:line-through; cursor:not-allowed; }
-.seat.held-by-other { background:#f5d6a1; color:#8a5b1d; border-color:#d79a43; cursor:not-allowed; text-decoration:none; }
+.seat:not(.selected).held-by-other { background:#e2e6e5; color:#687875; border-color:#b8c2bf; cursor:not-allowed; text-decoration:none; box-shadow:inset 0 0 0 1px #eef1f0; }
 .seat.selected { background:#55b69b; color:#fff; border-color:#55b69b; text-decoration:none; cursor:pointer; }
 .seat-grid { border:1px solid #dce9e5; border-radius:18px; background:#fff; }
 .seat-grid::before { content:'◉'; position:absolute; left:15px; top:50%; transform:translateY(-50%); width:28px; height:28px; border:3px solid #b8c0bd; border-radius:50%; color:#b8c0bd; display:grid; place-items:center; font-size:17px; line-height:1; box-sizing:border-box; }
@@ -63,7 +63,7 @@ button { cursor: pointer; }
 .legend-dot.available { background:#f8d84d; border-color:#e1c43b; }
 .legend-dot.selected { background:#236b24; border-color:#236b24; }
 .legend-dot.sold { background:#f4f5f4; }
-.legend-dot.held-by-other { background:#f5d6a1; border-color:#d79a43; }
+.legend-dot.held-by-other { background:#e2e6e5; border-color:#b8c2bf; }
 .seat[hidden] { display:none; }
 .passenger-card { border:1px solid #e2ece8; border-radius:8px; padding:13px; margin-bottom:10px; }
 .passenger-card > strong { color:#2e7770; font-size:11px; }

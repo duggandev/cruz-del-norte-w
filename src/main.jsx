@@ -31,6 +31,13 @@ const adminResourceByView = { Viajes: 'viajes', Reservas: 'reservas', Pasajeros:
 const routeByView = { Ventanilla: '/ventanilla', Viajes: '/viajes', Reservas: '/reservas', Pasajeros: '/pasajeros', Pagos: '/pagos', Pasajes: '/pasajes' }
 const viewFromPath = path => Object.entries(routeByView).find(([, route]) => path === route)?.[0] || 'Ventanilla'
 
+const normalizeSeatState = value => String(value || '')
+  .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+  .trim().toUpperCase().replace(/[\s-]+/g, '_')
+const availableSeatStates = new Set(['', 'DISPONIBLE', 'LIBRE'])
+const soldSeatStates = new Set(['VENDIDO', 'PAGADO', 'EMITIDO', 'CONFIRMADA_PAGO'])
+const externalLockStates = new Set(['TEMPORAL', 'CONFIRMADA', 'RESERVADO', 'RESERVADA', 'OCUPADO', 'NO_DISPONIBLE', 'BLOQUEADO'])
+
 const getTodayInputValue = () => {
   const now = new Date()
   const localNow = new Date(now.getTime() - now.getTimezoneOffset() * 60000)
@@ -358,12 +365,15 @@ function SalesDesk({ sale, setSale }) {
       const seatId = lock.id_asiento ?? lock.idAsiento
       const reservationId = lock.id_reserva ?? lock.idReserva
       const lockState = lock.estado ?? lock.status
+      const normalizedLockState = normalizeSeatState(lockState)
       if (seatId == null) return
       setSale(previous => {
         if (!previous?.selectedTrip || previous.selectedTrip.idViaje !== tripId) return previous
-        const released = eventType === 'DELETE' || !['TEMPORAL', 'CONFIRMADA'].includes(lockState)
+        // Un INSERT/seat_held representa una ocupación incluso si el backend
+        // no envía estado; solo una liberación explícita debe dejarlo libre.
+        const released = eventType === 'DELETE' || ['DISPONIBLE', 'LIBRE', 'LIBERADA', 'EXPIRADA', 'VENCIDA', 'CANCELADA'].includes(normalizedLockState)
         const seatDetails = (previous.selectedTrip.seatDetails || []).map(seat => Number(seat.idAsiento) === Number(seatId)
-          ? { ...seat, estado: released ? 'DISPONIBLE' : lockState, disponible: released, idReserva: released ? null : reservationId }
+          ? { ...seat, estado: released ? 'DISPONIBLE' : (lockState || 'NO_DISPONIBLE'), disponible: released, idReserva: released ? null : reservationId }
           : seat)
         const own = previous.reservations.some(reservation => Number(reservation.idReserva) === Number(reservationId))
         return { ...previous, selectedTrip: { ...previous.selectedTrip, seatDetails }, message: !released && !own ? `El asiento ${seatId} fue reservado por otra ventanilla.` : previous.message }
@@ -450,8 +460,10 @@ function SalesDesk({ sale, setSale }) {
       const seat = details[index]
       const selected = seat ? current.selectedSeats.includes(seatToken(seat)) : false
       const own = seat?.idReserva != null && current.reservations.some(reservation => Number(reservation.idReserva) === Number(seat.idReserva))
-      const heldByOther = seat?.estado && ['TEMPORAL', 'CONFIRMADA'].includes(seat.estado) && !selected && !own
-      const sold = seat?.estado && seat.estado !== 'DISPONIBLE' && !selected && !heldByOther
+      const state = normalizeSeatState(seat?.estado)
+      const unavailable = seat && seat.disponible === false
+      const heldByOther = !selected && !own && !seat?.sintetico && (externalLockStates.has(state) || (unavailable && !availableSeatStates.has(state) && !soldSeatStates.has(state)))
+      const sold = !selected && !heldByOther && seat?.estado && !availableSeatStates.has(state)
       button.classList.toggle('sold', Boolean(sold))
       button.classList.toggle('held-by-other', Boolean(heldByOther))
       if (seat) button.textContent = String(seat.numero ?? seat.idAsiento)
@@ -461,7 +473,9 @@ function SalesDesk({ sale, setSale }) {
       // representa la posición transversal del asiento.
       button.style.gridColumn = String(Number(seat?.fila || (Math.floor(fallbackIndex / columns) + 1)))
       button.style.gridRow = String(Number(seat?.columnaNumero || ((fallbackIndex % columns) + 1)))
-      button.title = seat ? `${seat.tipo || 'Asiento'} · Piso ${seat.piso || '—'} · ${seat.columna || '—'} · S/ ${seat.precio ?? '—'}` : ''
+      button.title = seat
+        ? `${heldByOther ? 'Bloqueado por otra ventanilla · ' : ''}${seat.tipo || 'Asiento'} · Piso ${seat.piso || '—'} · ${seat.columna || '—'} · S/ ${seat.precio ?? '—'}`
+        : ''
     })
     return undefined
   }, [current.step, current.selectedTrip, current.selectedSeats, current.reservations])
@@ -500,7 +514,11 @@ function SalesDesk({ sale, setSale }) {
       grid.dataset.layout = current.selectedTrip.tipoBus || ''
       details.forEach((seat, index) => {
         const button = grid.querySelectorAll('.seat')[index]
-        if (button) button.title = `Piso ${seat.piso ?? '—'} · ${seat.columna || '—'} · ${seat.estado || '—'} · S/ ${seat.precio ?? '—'}`
+        if (button) {
+          const state = normalizeSeatState(seat.estado)
+          const blocked = !seat.sintetico && seat.disponible === false && externalLockStates.has(state)
+          button.title = `${blocked ? 'Bloqueado en tiempo real · ' : ''}Piso ${seat.piso ?? '—'} · ${seat.columna || '—'} · ${seat.estado || '—'} · S/ ${seat.precio ?? '—'}`
+        }
       })
     }
     return undefined
@@ -515,7 +533,7 @@ function SalesDesk({ sale, setSale }) {
     tabs.className = 'floor-tabs'
     const legend = document.createElement('div')
     legend.className = 'seat-legend'
-    legend.innerHTML = '<span><i class="legend-dot available"></i>Disponible</span><span><i class="legend-dot selected"></i>Seleccionado</span><span><i class="legend-dot held-by-other"></i>Ocupado en otra ventanilla</span><span><i class="legend-dot sold"></i>Vendido</span>'
+    legend.innerHTML = '<span><i class="legend-dot available"></i>Disponible</span><span><i class="legend-dot selected"></i>Seleccionado</span><span><i class="legend-dot held-by-other"></i>Bloqueado en tiempo real</span><span><i class="legend-dot sold"></i>Vendido</span>'
     const buttons = [...grid.querySelectorAll('.seat')]
     const showFloor = floor => {
       const floorSeats = details.filter(item => Number(item.piso || 1) === floor)
